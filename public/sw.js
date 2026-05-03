@@ -1,5 +1,5 @@
 // Bump this string on every deploy to force the new SW to activate
-const CACHE = "stretch-20260503-1259";
+const CACHE = "stretch-20260503-1318";
 
 // Pre-cache app shell on install
 self.addEventListener("install", (e) => {
