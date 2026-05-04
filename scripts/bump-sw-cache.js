@@ -1,26 +1,34 @@
 #!/usr/bin/env node
-// Updates the CACHE version string in public/sw.js with a timestamp.
+// Auto-bumps patch version in lib/version.js and syncs CACHE in public/sw.js.
 // Called by the pre-commit git hook.
 const fs = require("fs");
 const path = require("path");
 
+const versionPath = path.join(__dirname, "..", "lib", "version.js");
+const versionContent = fs.readFileSync(versionPath, "utf8");
+
+const match = versionContent.match(/VERSION = "(\d+)\.(\d+)\.(\d+)"/);
+if (!match) {
+  console.error("bump-sw-cache: VERSION pattern not found in lib/version.js");
+  process.exit(1);
+}
+
+const [major, minor, patch] = [+match[1], +match[2], +match[3]];
+const newVersion = `${major}.${minor}.${patch + 1}`;
+
+fs.writeFileSync(versionPath, `export const VERSION = "${newVersion}";\n`);
+
 const swPath = path.join(__dirname, "..", "public", "sw.js");
-const content = fs.readFileSync(swPath, "utf8");
-
-const d = new Date();
-const pad = (n) => String(n).padStart(2, "0");
-const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
-const newCache = `stretch-${stamp}`;
-
-const updated = content.replace(
+const swContent = fs.readFileSync(swPath, "utf8");
+const updatedSw = swContent.replace(
   /const CACHE = "stretch-[^"]*"/,
-  `const CACHE = "${newCache}"`
+  `const CACHE = "stretch-${newVersion}"`
 );
 
-if (updated === content) {
+if (updatedSw === swContent) {
   console.error("bump-sw-cache: CACHE pattern not found in public/sw.js");
   process.exit(1);
 }
 
-fs.writeFileSync(swPath, updated);
-console.log(`bump-sw-cache: ${newCache}`);
+fs.writeFileSync(swPath, updatedSw);
+console.log(`bump-sw-cache: v${newVersion}`);

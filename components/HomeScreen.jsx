@@ -2,6 +2,7 @@
 import { useState, useEffect } from "react";
 import { loadData, saveData, generateId } from "@/lib/storage";
 import { totalRoutineSeconds } from "@/lib/timer";
+import { VERSION } from "@/lib/version";
 
 export default function HomeScreen({ navigate }) {
   const [data, setData] = useState(null);
@@ -51,7 +52,8 @@ export default function HomeScreen({ navigate }) {
           {/* Header */}
           <div className="px-5 pt-6 pb-2">
             <h1 className="text-2xl font-bold tracking-tight text-white">
-              Simple Stretch
+              Simple Stretch{" "}
+              <span className="text-xs font-normal text-neutral-600">v{VERSION}</span>
             </h1>
             <p className="text-sm text-neutral-500 mt-0.5">
               {data.routines.length === 0
