@@ -1,8 +1,12 @@
 #!/usr/bin/env node
-// Auto-bumps patch version in lib/version.js and syncs CACHE in public/sw.js.
-// Called by the pre-commit git hook.
+// Auto-bumps version in lib/version.js and syncs CACHE in public/sw.js.
+// Called by the pre-commit git hook (patch bump).
+// Manual usage: node scripts/bump-sw-cache.js [--minor | --major]
 const fs = require("fs");
 const path = require("path");
+
+const flag = process.argv[2];
+const bumpType = flag === "--major" ? "major" : flag === "--minor" ? "minor" : "patch";
 
 const versionPath = path.join(__dirname, "..", "lib", "version.js");
 const versionContent = fs.readFileSync(versionPath, "utf8");
@@ -13,8 +17,11 @@ if (!match) {
   process.exit(1);
 }
 
-const [major, minor, patch] = [+match[1], +match[2], +match[3]];
-const newVersion = `${major}.${minor}.${patch + 1}`;
+let [major, minor, patch] = [+match[1], +match[2], +match[3]];
+if (bumpType === "major") { major++; minor = 0; patch = 0; }
+else if (bumpType === "minor") { minor++; patch = 0; }
+else { patch++; }
+const newVersion = `${major}.${minor}.${patch}`;
 
 fs.writeFileSync(versionPath, `export const VERSION = "${newVersion}";\n`);
 
@@ -31,4 +38,4 @@ if (updatedSw === swContent) {
 }
 
 fs.writeFileSync(swPath, updatedSw);
-console.log(`bump-sw-cache: v${newVersion}`);
+console.log(`bump-sw-cache: v${newVersion} (${bumpType})`);
