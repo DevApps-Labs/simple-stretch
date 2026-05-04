@@ -201,7 +201,11 @@ export default function SessionScreen({ goBack, params }) {
 
   function handleBack() {
     if (phase === "active") {
-      if (!confirm("Exit this session?")) return;
+      if (!confirm("Exit this session?")) {
+        // iOS suspends AudioContext while the dialog is shown; resume it so beeps continue
+        resumeAudio();
+        return;
+      }
       const s = sess.current;
       if (s.timerId) clearInterval(s.timerId);
       s.timerId = null;
