@@ -111,6 +111,12 @@ export default function HomeScreen({ navigate }) {
                 Import JSON
               </button>
             </div>
+            <button
+              onClick={() => navigate("json-schema")}
+              className="w-full bg-neutral-800 active:bg-neutral-700 text-neutral-500 font-medium py-2.5 rounded-xl text-sm"
+            >
+              JSON Schema &amp; AI Prompt
+            </button>
           </div>
         </div>
       </div>

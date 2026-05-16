@@ -15,6 +15,21 @@ import {
   speak,
 } from "@/lib/audio";
 
+function itemToUi(item, t, idx, queueLen, paused) {
+  return {
+    stretchName: item.stretchName,
+    phaseLabel: getPhaseLabel(item),
+    timeRemaining: t,
+    duration: item.duration ?? 0,
+    isPaused: paused,
+    itemIndex: idx,
+    queueLength: queueLen,
+    itemType: item.type,
+    reps: item.reps ?? 0,
+    instructions: item.instructions ?? "",
+  };
+}
+
 export default function SessionScreen({ goBack, params }) {
   const { routineId } = params;
   const [routine, setRoutine] = useState(null);
@@ -28,6 +43,7 @@ export default function SessionScreen({ goBack, params }) {
     paused: false,
     timerId: null,
     wakeLock: null,
+    repCount: 0,
   });
 
   const [ui, setUi] = useState({
@@ -38,7 +54,13 @@ export default function SessionScreen({ goBack, params }) {
     isPaused: false,
     itemIndex: 0,
     queueLength: 0,
+    itemType: "timed",
+    reps: 0,
+    instructions: "",
   });
+
+  // Rep counter for reps-type items — kept in sync with sess.current.repCount
+  const [repCount, setRepCount] = useState(0);
 
   useEffect(() => {
     const data = loadData();
@@ -58,26 +80,22 @@ export default function SessionScreen({ goBack, params }) {
     };
   }, []);
 
-  // Called from button click handlers (always fresh closure — stable deps only)
+  function resetRepCount() {
+    sess.current.repCount = 0;
+    setRepCount(0);
+  }
+
   function refreshUi() {
     const s = sess.current;
     const item = s.queue[s.idx];
     if (!item) return;
-    setUi({
-      stretchName: item.stretchName,
-      phaseLabel: getPhaseLabel(item),
-      timeRemaining: s.t,
-      duration: item.duration,
-      isPaused: s.paused,
-      itemIndex: s.idx,
-      queueLength: s.queue.length,
-    });
+    setUi(itemToUi(item, s.t, s.idx, s.queue.length, s.paused));
+    setRepCount(s.repCount);
   }
 
   function doStart() {
     if (!routine?.stretches?.length) return;
 
-    // Must unlock audio in a synchronous user gesture handler
     unlockAudio();
     warmupSpeech();
 
@@ -85,20 +103,13 @@ export default function SessionScreen({ goBack, params }) {
     const queue = buildQueue(routine);
     s.queue = queue;
     s.idx = 0;
-    s.t = queue[0].duration;
+    s.t = queue[0].duration ?? 0;
     s.paused = false;
+    s.repCount = 0;
 
-    // Set initial UI before starting tick
     const first = queue[0];
-    setUi({
-      stretchName: first.stretchName,
-      phaseLabel: getPhaseLabel(first),
-      timeRemaining: first.duration,
-      duration: first.duration,
-      isPaused: false,
-      itemIndex: 0,
-      queueLength: queue.length,
-    });
+    setUi(itemToUi(first, s.t, 0, queue.length, false));
+    setRepCount(0);
     setPhase("active");
 
     navigator.wakeLock
@@ -108,22 +119,24 @@ export default function SessionScreen({ goBack, params }) {
       })
       .catch(() => {});
 
-    // The interval closure only touches sess.current (ref) and stable setters.
-    // refreshUi and advance logic are inlined to avoid stale function captures.
     s.timerId = setInterval(() => {
       const s = sess.current;
       if (s.paused) return;
 
-      s.t--;
       const item = s.queue[s.idx];
       if (!item) return;
 
-      // 3-beep countdown at 3, 2, 1 seconds before any phase ends
+      // Rep-based items wait for user input — don't countdown or auto-advance
+      if (item.type === "reps") return;
+
+      s.t--;
+
+      // 3-beep countdown at 3, 2, 1 seconds before any timed phase ends
       if (s.t >= 1 && s.t <= 3) beep();
 
       // "Next up" voice 10 seconds before a stretch phase ends
       if (
-        (item.type === "stretch_full" || item.type === "stretch_second") &&
+        (item.type === "stretch_full" || item.type === "stretch_second" || item.type === "rep_hold") &&
         s.t === 10 &&
         item.nextStretchName
       ) {
@@ -141,22 +154,14 @@ export default function SessionScreen({ goBack, params }) {
           return;
         }
         const next = s.queue[s.idx];
-        s.t = next.duration;
+        s.t = next.duration ?? 0;
+        s.repCount = 0;
         if (next.type === "side_switch") speak("Switch sides");
-        // Update UI for the new item
-        setUi({
-          stretchName: next.stretchName,
-          phaseLabel: getPhaseLabel(next),
-          timeRemaining: next.duration,
-          duration: next.duration,
-          isPaused: false,
-          itemIndex: s.idx,
-          queueLength: s.queue.length,
-        });
+        setUi(itemToUi(next, s.t, s.idx, s.queue.length, false));
+        setRepCount(0);
         return;
       }
 
-      // Update countdown display
       setUi((prev) => ({ ...prev, timeRemaining: s.t }));
     }, 1000);
   }
@@ -167,6 +172,7 @@ export default function SessionScreen({ goBack, params }) {
   }
 
   function doNext() {
+    resetRepCount();
     const s = sess.current;
     s.idx++;
     if (s.idx >= s.queue.length) {
@@ -178,7 +184,7 @@ export default function SessionScreen({ goBack, params }) {
       return;
     }
     const item = s.queue[s.idx];
-    s.t = item.duration;
+    s.t = item.duration ?? 0;
     if (item.type === "side_switch") speak("Switch sides");
     refreshUi();
   }
@@ -187,12 +193,26 @@ export default function SessionScreen({ goBack, params }) {
     const s = sess.current;
     const item = s.queue[s.idx];
     if (!item) return;
-    // If more than 3 seconds elapsed, restart current item
+
+    // For reps items: if any reps counted, reset count; otherwise go back
+    if (item.type === "reps") {
+      if (s.repCount > 0) {
+        resetRepCount();
+      } else if (s.idx > 0) {
+        s.idx--;
+        s.t = s.queue[s.idx].duration ?? 0;
+        resetRepCount();
+        refreshUi();
+      }
+      return;
+    }
+
+    resetRepCount();
     if (s.t < item.duration - 3) {
       s.t = item.duration;
     } else if (s.idx > 0) {
       s.idx--;
-      s.t = s.queue[s.idx].duration;
+      s.t = s.queue[s.idx].duration ?? 0;
     } else {
       s.t = item.duration;
     }
@@ -202,7 +222,6 @@ export default function SessionScreen({ goBack, params }) {
   function handleBack() {
     if (phase === "active") {
       if (!confirm("Exit this session?")) {
-        // iOS suspends AudioContext while the dialog is shown; resume it so beeps continue
         resumeAudio();
         return;
       }
@@ -236,8 +255,8 @@ export default function SessionScreen({ goBack, params }) {
     );
   }
 
-  // Active session
-  const progress = ui.duration > 0 ? ui.timeRemaining / ui.duration : 0;
+  const isRepsItem = ui.itemType === "reps";
+  const progress = !isRepsItem && ui.duration > 0 ? ui.timeRemaining / ui.duration : 0;
 
   return (
     <div
@@ -275,102 +294,193 @@ export default function SessionScreen({ goBack, params }) {
 
       {/* Progress bar */}
       <div className="mx-4 h-1 bg-neutral-800 rounded-full overflow-hidden">
-        <div
-          className="h-full bg-teal-500 rounded-full transition-all duration-1000 ease-linear"
-          style={{ width: `${progress * 100}%` }}
-        />
-      </div>
-
-      {/* Main timer area */}
-      <div className="flex-1 flex flex-col items-center justify-center px-8 py-4">
-        {/* Phase label */}
-        {ui.phaseLabel ? (
-          <p className="text-sm font-medium text-teal-400 uppercase tracking-widest mb-3">
-            {ui.phaseLabel}
-          </p>
+        {isRepsItem ? (
+          <div
+            className="h-full bg-teal-500 rounded-full transition-all duration-300"
+            style={{ width: `${ui.reps > 0 ? (repCount / ui.reps) * 100 : 0}%` }}
+          />
         ) : (
-          <div className="mb-3 h-5" />
-        )}
-
-        {/* Stretch name */}
-        <h2 className="text-3xl font-bold text-white text-center mb-8 leading-tight">
-          {ui.stretchName}
-        </h2>
-
-        {/* Big countdown */}
-        <div className="text-8xl font-mono font-bold text-teal-400 tabular-nums leading-none mb-8">
-          {formatTime(ui.timeRemaining)}
-        </div>
-
-        {ui.isPaused && (
-          <p className="text-neutral-500 text-sm tracking-widest uppercase">
-            Paused
-          </p>
+          <div
+            className="h-full bg-teal-500 rounded-full transition-all duration-1000 ease-linear"
+            style={{ width: `${progress * 100}%` }}
+          />
         )}
       </div>
 
-      {/* Media player controls */}
-      <div className="flex items-center justify-center gap-8 pb-6 px-8">
-        {/* Prev */}
-        <button
-          onClick={doPrev}
-          className="w-14 h-14 rounded-full bg-neutral-800 active:bg-neutral-700 flex items-center justify-center"
-          aria-label="Previous"
-        >
-          <svg
-            width="22"
-            height="22"
-            viewBox="0 0 24 24"
-            fill="currentColor"
-            className="text-white"
-          >
-            <polygon points="18,3 7,12 18,21" />
-            <rect x="4" y="3" width="3" height="18" rx="1" />
-          </svg>
-        </button>
-
-        {/* Pause / Resume */}
-        <button
-          onClick={doPause}
-          className="w-20 h-20 rounded-full bg-teal-500 active:bg-teal-600 flex items-center justify-center shadow-lg"
-          aria-label={ui.isPaused ? "Resume" : "Pause"}
-        >
-          {ui.isPaused ? (
-            <svg
-              width="32"
-              height="32"
-              viewBox="0 0 24 24"
-              fill="black"
-              className="translate-x-0.5"
-            >
-              <polygon points="5,3 20,12 5,21" />
-            </svg>
+      {/* Main area */}
+      {isRepsItem ? (
+        <div className="flex-1 flex flex-col items-center justify-center px-8 py-4">
+          {ui.phaseLabel ? (
+            <p className="text-sm font-medium text-teal-400 uppercase tracking-widest mb-3">
+              {ui.phaseLabel}
+            </p>
           ) : (
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="black">
-              <rect x="5" y="3" width="4" height="18" rx="1" />
-              <rect x="15" y="3" width="4" height="18" rx="1" />
-            </svg>
+            <div className="mb-3 h-5" />
           )}
-        </button>
 
-        {/* Next */}
-        <button
-          onClick={doNext}
-          className="w-14 h-14 rounded-full bg-neutral-800 active:bg-neutral-700 flex items-center justify-center"
-          aria-label="Next"
-        >
-          <svg
-            width="22"
-            height="22"
-            viewBox="0 0 24 24"
-            fill="currentColor"
-            className="text-white"
+          <h2 className="text-3xl font-bold text-white text-center mb-4 leading-tight">
+            {ui.stretchName}
+          </h2>
+
+          {ui.instructions ? (
+            <p className="text-sm text-neutral-400 text-center mb-8 leading-relaxed max-w-xs">
+              {ui.instructions}
+            </p>
+          ) : (
+            <div className="mb-8" />
+          )}
+
+          {/* Rep counter button */}
+          <button
+            onClick={() => {
+              const next = Math.min(sess.current.repCount + 1, ui.reps);
+              sess.current.repCount = next;
+              setRepCount(next);
+            }}
+            className="w-40 h-40 rounded-full bg-neutral-800 active:bg-neutral-700 flex flex-col items-center justify-center mb-3"
+            aria-label="Count rep"
           >
-            <polygon points="6,3 17,12 6,21" />
-            <rect x="17" y="3" width="3" height="18" rx="1" />
-          </svg>
-        </button>
-      </div>
+            <span className="text-6xl font-bold text-white tabular-nums leading-none">
+              {repCount}
+            </span>
+            <span className="text-sm text-neutral-500 mt-1.5">of {ui.reps}</span>
+          </button>
+
+          {repCount > 0 && (
+            <button
+              onClick={() => {
+                const next = Math.max(sess.current.repCount - 1, 0);
+                sess.current.repCount = next;
+                setRepCount(next);
+              }}
+              className="text-xs text-neutral-600 active:text-neutral-400 py-1 px-3"
+            >
+              undo
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="flex-1 flex flex-col items-center justify-center px-8 py-4">
+          {ui.phaseLabel ? (
+            <p className="text-sm font-medium text-teal-400 uppercase tracking-widest mb-3">
+              {ui.phaseLabel}
+            </p>
+          ) : (
+            <div className="mb-3 h-5" />
+          )}
+
+          <h2 className="text-3xl font-bold text-white text-center mb-8 leading-tight">
+            {ui.stretchName}
+          </h2>
+
+          <div className="text-8xl font-mono font-bold text-teal-400 tabular-nums leading-none mb-8">
+            {formatTime(ui.timeRemaining)}
+          </div>
+
+          {ui.isPaused && (
+            <p className="text-neutral-500 text-sm tracking-widest uppercase">
+              Paused
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Bottom controls */}
+      {isRepsItem ? (
+        <div className="flex items-center gap-4 pb-6 px-8">
+          {/* Prev */}
+          <button
+            onClick={doPrev}
+            className="w-14 h-14 rounded-full bg-neutral-800 active:bg-neutral-700 flex items-center justify-center flex-shrink-0"
+            aria-label="Previous"
+          >
+            <svg
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              className="text-white"
+            >
+              <polygon points="18,3 7,12 18,21" />
+              <rect x="4" y="3" width="3" height="18" rx="1" />
+            </svg>
+          </button>
+
+          {/* Done button */}
+          <button
+            onClick={doNext}
+            className={`flex-1 py-5 rounded-2xl font-bold text-lg transition-colors ${
+              repCount >= ui.reps && ui.reps > 0
+                ? "bg-teal-500 active:bg-teal-600 text-black"
+                : "bg-neutral-800 active:bg-neutral-700 text-white"
+            }`}
+          >
+            Done
+          </button>
+        </div>
+      ) : (
+        <div className="flex items-center justify-center gap-8 pb-6 px-8">
+          {/* Prev */}
+          <button
+            onClick={doPrev}
+            className="w-14 h-14 rounded-full bg-neutral-800 active:bg-neutral-700 flex items-center justify-center"
+            aria-label="Previous"
+          >
+            <svg
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              className="text-white"
+            >
+              <polygon points="18,3 7,12 18,21" />
+              <rect x="4" y="3" width="3" height="18" rx="1" />
+            </svg>
+          </button>
+
+          {/* Pause / Resume */}
+          <button
+            onClick={doPause}
+            className="w-20 h-20 rounded-full bg-teal-500 active:bg-teal-600 flex items-center justify-center shadow-lg"
+            aria-label={ui.isPaused ? "Resume" : "Pause"}
+          >
+            {ui.isPaused ? (
+              <svg
+                width="32"
+                height="32"
+                viewBox="0 0 24 24"
+                fill="black"
+                className="translate-x-0.5"
+              >
+                <polygon points="5,3 20,12 5,21" />
+              </svg>
+            ) : (
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="black">
+                <rect x="5" y="3" width="4" height="18" rx="1" />
+                <rect x="15" y="3" width="4" height="18" rx="1" />
+              </svg>
+            )}
+          </button>
+
+          {/* Next */}
+          <button
+            onClick={doNext}
+            className="w-14 h-14 rounded-full bg-neutral-800 active:bg-neutral-700 flex items-center justify-center"
+            aria-label="Next"
+          >
+            <svg
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              className="text-white"
+            >
+              <polygon points="6,3 17,12 6,21" />
+              <rect x="17" y="3" width="3" height="18" rx="1" />
+            </svg>
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -409,12 +519,13 @@ function PreScreen({ routine, onStart, onBack }) {
         {routine.name}
       </h2>
       <p className="text-neutral-400 mb-12 text-center">
-        {count} stretch{count !== 1 ? "es" : ""} · ~{formatTime(totalSec)}
+        {count} exercise{count !== 1 ? "s" : ""}
+        {totalSec > 0 && ` · ~${formatTime(totalSec)}`}
       </p>
 
       {count === 0 ? (
         <p className="text-neutral-600 text-center">
-          Add stretches to this routine first.
+          Add exercises to this routine first.
         </p>
       ) : (
         <button

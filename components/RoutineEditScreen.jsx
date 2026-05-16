@@ -45,7 +45,11 @@ export default function RoutineEditScreen({ navigate, goBack, params }) {
       id: generateId(),
       libraryId: entry.id,
       name: entry.name,
+      exerciseType: "timed",
       duration: 30,
+      reps: 10,
+      holdPerRep: 8,
+      instructions: "",
       switchSides: false,
       transitionTime: 5,
     };
@@ -60,7 +64,11 @@ export default function RoutineEditScreen({ navigate, goBack, params }) {
       id: generateId(),
       libraryId: libEntry.id,
       name,
+      exerciseType: "timed",
       duration: 30,
+      reps: 10,
+      holdPerRep: 8,
+      instructions: "",
       switchSides: false,
       transitionTime: 5,
     };
@@ -180,10 +188,18 @@ export default function RoutineEditScreen({ navigate, goBack, params }) {
 }
 
 function StretchRow({ stretch, index, total, onEdit, onDelete, onMove }) {
-  const mins = Math.floor(stretch.duration / 60);
-  const secs = stretch.duration % 60;
-  const timeStr =
-    mins > 0 ? `${mins}m ${secs > 0 ? secs + "s" : ""}` : `${secs}s`;
+  const type = stretch.exerciseType ?? "timed";
+  let timeStr;
+  if (type === "reps") {
+    timeStr = `${stretch.reps ?? 10} reps`;
+  } else if (type === "rep_hold") {
+    timeStr = `${stretch.reps ?? 5} × ${stretch.holdPerRep ?? 8}s`;
+  } else {
+    const dur = stretch.duration ?? 0;
+    const mins = Math.floor(dur / 60);
+    const secs = dur % 60;
+    timeStr = mins > 0 ? `${mins}m ${secs > 0 ? secs + "s" : ""}` : `${secs}s`;
+  }
 
   return (
     <div className="bg-neutral-900 rounded-xl flex items-center gap-1 pr-1">

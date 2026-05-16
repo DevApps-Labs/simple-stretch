@@ -17,12 +17,25 @@ export default function StretchConfigScreen({ goBack, params }) {
   }, [routineId, stretchId]);
 
   function updateStretch(updates) {
-    const updated = { ...stretch, ...updates };
+    let updated = { ...stretch, ...updates };
 
-    // Auto-adjust duration when switchSides toggles
-    if ("switchSides" in updates) {
-      if (updates.switchSides && stretch.duration === 30) updated.duration = 60;
-      if (!updates.switchSides && stretch.duration === 60) updated.duration = 30;
+    // Set sensible defaults when switching exercise type
+    if ("exerciseType" in updates) {
+      if (updates.exerciseType === "reps") {
+        if (!updated.reps) updated.reps = 10;
+        if (updated.instructions === undefined) updated.instructions = "";
+      } else if (updates.exerciseType === "rep_hold") {
+        if (!updated.reps) updated.reps = 5;
+        if (!updated.holdPerRep) updated.holdPerRep = 8;
+      } else if (updates.exerciseType === "timed") {
+        if (!updated.duration) updated.duration = 30;
+      }
+    }
+
+    // Auto-adjust duration when switchSides toggles (timed only)
+    if ("switchSides" in updates && (updated.exerciseType ?? "timed") === "timed") {
+      if (updates.switchSides && updated.duration === 30) updated.duration = 60;
+      if (!updates.switchSides && updated.duration === 60) updated.duration = 30;
     }
 
     setStretch(updated);
@@ -52,7 +65,8 @@ export default function StretchConfigScreen({ goBack, params }) {
     );
   }
 
-  const halfDur = Math.floor(stretch.duration / 2);
+  const exerciseType = stretch.exerciseType ?? "timed";
+  const halfDur = Math.floor((stretch.duration ?? 30) / 2);
 
   return (
     <div
@@ -63,7 +77,7 @@ export default function StretchConfigScreen({ goBack, params }) {
       }}
     >
       {/* Header */}
-      <div className="flex items-center gap-3 px-4 pt-4 pb-6">
+      <div className="flex items-center gap-3 px-4 pt-4 pb-4">
         <button
           onClick={goBack}
           className="w-10 h-10 flex items-center justify-center text-neutral-400 active:text-white"
@@ -84,36 +98,142 @@ export default function StretchConfigScreen({ goBack, params }) {
       </div>
 
       {/* Settings cards */}
-      <div className="px-4 space-y-3">
-        {/* Duration */}
+      <div className="px-4 space-y-3 overflow-y-auto flex-1">
+
+        {/* Exercise Type */}
         <div className="bg-neutral-900 rounded-2xl p-4">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <p className="font-semibold text-white">Duration</p>
-              {stretch.switchSides && (
-                <p className="text-xs text-neutral-500 mt-0.5">
-                  {halfDur}s per side
-                </p>
-              )}
-            </div>
-            <span className="text-2xl font-bold text-teal-400">
-              {stretch.duration}s
-            </span>
+          <p className="font-semibold text-white mb-3">Exercise Type</p>
+          <div className="flex gap-1 bg-neutral-800 p-1 rounded-xl">
+            {[
+              { value: "timed", label: "Timed" },
+              { value: "reps", label: "Rep-Based" },
+              { value: "rep_hold", label: "Rep × Hold" },
+            ].map(({ value, label }) => (
+              <button
+                key={value}
+                onClick={() => updateStretch({ exerciseType: value })}
+                className={`flex-1 py-2 rounded-lg text-xs font-semibold transition-colors ${
+                  exerciseType === value
+                    ? "bg-teal-500 text-black"
+                    : "text-neutral-400 active:text-white"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
-          <div className="flex gap-3">
-            <StepButton
-              label="−15s"
-              onClick={() =>
-                updateStretch({ duration: Math.max(15, stretch.duration - 15) })
-              }
-              disabled={stretch.duration <= 15}
-            />
-            <StepButton
-              label="+15s"
-              onClick={() => updateStretch({ duration: stretch.duration + 15 })}
-            />
-          </div>
+          <p className="text-xs text-neutral-600 mt-2">
+            {exerciseType === "timed" && "Single countdown timer"}
+            {exerciseType === "reps" && "Count reps at your own pace"}
+            {exerciseType === "rep_hold" && "Each rep has its own countdown"}
+          </p>
         </div>
+
+        {/* Timed: Duration */}
+        {exerciseType === "timed" && (
+          <div className="bg-neutral-900 rounded-2xl p-4">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <p className="font-semibold text-white">Duration</p>
+                {stretch.switchSides && (
+                  <p className="text-xs text-neutral-500 mt-0.5">
+                    {halfDur}s per side
+                  </p>
+                )}
+              </div>
+              <span className="text-2xl font-bold text-teal-400">
+                {stretch.duration ?? 30}s
+              </span>
+            </div>
+            <div className="flex gap-3">
+              <StepButton
+                label="−15s"
+                onClick={() =>
+                  updateStretch({ duration: Math.max(15, (stretch.duration ?? 30) - 15) })
+                }
+                disabled={(stretch.duration ?? 30) <= 15}
+              />
+              <StepButton
+                label="+15s"
+                onClick={() => updateStretch({ duration: (stretch.duration ?? 30) + 15 })}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Reps / Rep×Hold: Rep Count */}
+        {(exerciseType === "reps" || exerciseType === "rep_hold") && (
+          <div className="bg-neutral-900 rounded-2xl p-4">
+            <div className="flex items-center justify-between mb-4">
+              <p className="font-semibold text-white">Reps</p>
+              <span className="text-2xl font-bold text-teal-400">
+                {stretch.reps ?? (exerciseType === "rep_hold" ? 5 : 10)}
+              </span>
+            </div>
+            <div className="flex gap-3">
+              <StepButton
+                label="−1"
+                onClick={() =>
+                  updateStretch({ reps: Math.max(1, (stretch.reps ?? 5) - 1) })
+                }
+                disabled={(stretch.reps ?? 5) <= 1}
+              />
+              <StepButton
+                label="+1"
+                onClick={() => updateStretch({ reps: (stretch.reps ?? 5) + 1 })}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Rep×Hold: Hold Per Rep */}
+        {exerciseType === "rep_hold" && (
+          <div className="bg-neutral-900 rounded-2xl p-4">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <p className="font-semibold text-white">Hold Per Rep</p>
+                <p className="text-xs text-neutral-500 mt-0.5">
+                  Countdown for each rep
+                </p>
+              </div>
+              <span className="text-2xl font-bold text-teal-400">
+                {stretch.holdPerRep ?? 8}s
+              </span>
+            </div>
+            <div className="flex gap-3">
+              <StepButton
+                label="−1s"
+                onClick={() =>
+                  updateStretch({ holdPerRep: Math.max(1, (stretch.holdPerRep ?? 8) - 1) })
+                }
+                disabled={(stretch.holdPerRep ?? 8) <= 1}
+              />
+              <StepButton
+                label="+1s"
+                onClick={() =>
+                  updateStretch({ holdPerRep: (stretch.holdPerRep ?? 8) + 1 })
+                }
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Rep-Based: Instructions */}
+        {(exerciseType === "reps" || exerciseType === "rep_hold") && (
+          <div className="bg-neutral-900 rounded-2xl p-4">
+            <p className="font-semibold text-white mb-1">Instructions</p>
+            <p className="text-xs text-neutral-500 mb-3">
+              Optional reminder shown during the exercise
+            </p>
+            <textarea
+              value={stretch.instructions ?? ""}
+              onChange={(e) => updateStretch({ instructions: e.target.value })}
+              placeholder="e.g. 10 circles forward, then 10 back"
+              rows={2}
+              className="w-full bg-neutral-800 text-neutral-200 text-sm rounded-xl p-3 border border-neutral-700 focus:border-teal-500 focus:outline-none resize-none"
+            />
+          </div>
+        )}
 
         {/* Switch Sides */}
         <div className="bg-neutral-900 rounded-2xl p-4">
@@ -122,8 +242,10 @@ export default function StretchConfigScreen({ goBack, params }) {
               <p className="font-semibold text-white">Switch Sides</p>
               <p className="text-xs text-neutral-500 mt-0.5">
                 {stretch.switchSides
-                  ? `${halfDur}s each side with a 5s pause`
-                  : "Single side only"}
+                  ? exerciseType === "timed"
+                    ? `${halfDur}s each side with a 5s pause`
+                    : "Complete all reps on each side"
+                  : "No side switch"}
               </p>
             </div>
             <Toggle
@@ -139,7 +261,7 @@ export default function StretchConfigScreen({ goBack, params }) {
             <div>
               <p className="font-semibold text-white">Transition</p>
               <p className="text-xs text-neutral-500 mt-0.5">
-                Prep time before this stretch
+                Prep time before this exercise
               </p>
             </div>
             <span className="text-2xl font-bold text-teal-400">
@@ -164,6 +286,8 @@ export default function StretchConfigScreen({ goBack, params }) {
             />
           </div>
         </div>
+
+        <div className="pb-2" />
       </div>
     </div>
   );

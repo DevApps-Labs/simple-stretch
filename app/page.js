@@ -4,6 +4,7 @@ import HomeScreen from "@/components/HomeScreen";
 import RoutineEditScreen from "@/components/RoutineEditScreen";
 import StretchConfigScreen from "@/components/StretchConfigScreen";
 import SessionScreen from "@/components/SessionScreen";
+import JsonSchemaScreen from "@/components/JsonSchemaScreen";
 
 export default function App() {
   const [stack, setStack] = useState([{ screen: "home", params: {} }]);
@@ -28,6 +29,8 @@ export default function App() {
       return <StretchConfigScreen {...props} />;
     case "session":
       return <SessionScreen {...props} />;
+    case "json-schema":
+      return <JsonSchemaScreen {...props} />;
     default:
       return <HomeScreen {...props} />;
   }
