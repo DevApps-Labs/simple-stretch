@@ -1,5 +1,5 @@
 // Bump this string on every deploy to force the new SW to activate
-const CACHE = "stretch-1.0.6";
+const CACHE = "stretch-1.0.7";
 
 // Pre-cache app shell on install
 self.addEventListener("install", (e) => {
@@ -74,52 +74,17 @@ self.addEventListener("fetch", (e) => {
   );
 });
 
-// Notification scheduling for background timer alerts
-let notifTimers = [];
-
-self.addEventListener("message", (e) => {
-  if (e.data?.type === "SCHEDULE_NOTIFICATIONS") {
-    notifTimers.forEach(clearTimeout);
-    notifTimers = [];
-    const now = Date.now();
-    for (const item of e.data.schedule ?? []) {
-      const delay = item.at - now;
-      if (delay <= 0) continue;
-      const t = setTimeout(async () => {
-        // Skip if the user is already back in the app
-        const cs = await clients.matchAll({ type: "window", includeUncontrolled: true });
-        if (cs.some((c) => c.visibilityState === "visible")) return;
-        self.registration.showNotification(item.title, {
-          body: item.body,
-          icon: "/icons/icon-192.png",
-          tag: "stretch-timer",
-          renotify: true,
-          silent: false,
-        });
-      }, delay);
-      notifTimers.push(t);
-    }
-  }
-
-  if (e.data?.type === "SHOW_NOW") {
-    self.registration.showNotification(e.data.title, {
-      body: e.data.body,
+// Push notifications sent from the server via QStash + web-push
+self.addEventListener("push", (e) => {
+  const data = e.data?.json() ?? {};
+  e.waitUntil(
+    self.registration.showNotification(data.title ?? "Simple Stretch", {
+      body: data.body ?? "",
       icon: "/icons/icon-192.png",
       tag: "stretch-timer",
-      silent: true,
-    });
-  }
-
-  if (e.data?.type === "CANCEL_NOTIFICATIONS") {
-    notifTimers.forEach(clearTimeout);
-    notifTimers = [];
-  }
-
-  if (e.data?.type === "CLOSE_NOTIFICATIONS") {
-    self.registration.getNotifications({ tag: "stretch-timer" }).then((ns) =>
-      ns.forEach((n) => n.close())
-    );
-  }
+      renotify: true,
+    })
+  );
 });
 
 self.addEventListener("notificationclick", (e) => {

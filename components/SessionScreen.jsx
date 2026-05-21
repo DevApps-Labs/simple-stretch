@@ -30,13 +30,29 @@ function itemToUi(item, t, idx, queueLen, paused) {
   };
 }
 
-// Send the upcoming phase schedule to the SW so it can fire notifications
-// while the user is in another app.
-function sendSwSchedule(queue, fromIdx, tRemaining) {
-  if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
-  const ctrl = navigator.serviceWorker?.controller;
-  if (!ctrl) return;
+function urlBase64ToUint8Array(b64) {
+  const padding = "=".repeat((4 - (b64.length % 4)) % 4);
+  const base64 = (b64 + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+}
 
+async function getPushSub() {
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") return null;
+  const reg = await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) {
+    sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(
+        process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY
+      ),
+    });
+  }
+  return sub;
+}
+
+function buildNotifSchedule(queue, fromIdx, tRemaining) {
   const schedule = [];
   let cursor = Date.now() + tRemaining * 1000;
 
@@ -58,11 +74,35 @@ function sendSwSchedule(queue, fromIdx, tRemaining) {
   }
   schedule.push({ at: cursor, title: "Session complete!", body: "Great job!" });
 
-  ctrl.postMessage({ type: "SCHEDULE_NOTIFICATIONS", schedule });
+  return schedule;
 }
 
-function cancelSwNotifs() {
-  navigator.serviceWorker?.controller?.postMessage({ type: "CANCEL_NOTIFICATIONS" });
+async function scheduleServerNotifs(queue, fromIdx, tRemaining) {
+  try {
+    const sub = await getPushSub();
+    if (!sub) return [];
+    const schedule = buildNotifSchedule(queue, fromIdx, tRemaining);
+    const res = await fetch("/api/schedule-notifs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subscription: sub.toJSON(), schedule }),
+    });
+    const { ids } = await res.json();
+    return ids ?? [];
+  } catch {
+    return [];
+  }
+}
+
+async function cancelServerNotifs(ids) {
+  if (!ids?.length) return;
+  try {
+    await fetch("/api/cancel-notifs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+  } catch {}
 }
 
 export default function SessionScreen({ goBack, params }) {
@@ -80,6 +120,7 @@ export default function SessionScreen({ goBack, params }) {
     timerId: null,
     wakeLock: null,
     repCount: 0,
+    notifIds: [], // QStash message IDs for cancellation
   });
 
   const [ui, setUi] = useState({
@@ -107,8 +148,6 @@ export default function SessionScreen({ goBack, params }) {
     const onVisible = () => {
       if (document.visibilityState === "visible") {
         resumeAudio();
-        // Close any stale notifications that fired while away
-        navigator.serviceWorker?.controller?.postMessage({ type: "CLOSE_NOTIFICATIONS" });
         // Catch up the timer to the real elapsed time
         const s = sess.current;
         if (!s.paused && s.timerId) {
@@ -120,25 +159,6 @@ export default function SessionScreen({ goBack, params }) {
             } else {
               setUi((prev) => ({ ...prev, timeRemaining: s.t }));
             }
-          }
-        }
-      } else if (document.visibilityState === "hidden") {
-        // Show an immediate notification the moment the user leaves so there's
-        // always something in the tray — iOS suspends SW setTimeout so we can't
-        // rely on scheduled notifications firing at the right time.
-        const s = sess.current;
-        if (!s.paused && s.timerId) {
-          const item = s.queue[s.idx];
-          if (item && item.type !== "reps") {
-            const title =
-              item.type === "side_switch" ? "Switch sides!" :
-              item.type === "transition" ? `Get ready: ${item.stretchName}` :
-              item.stretchName;
-            navigator.serviceWorker?.controller?.postMessage({
-              type: "SHOW_NOW",
-              title,
-              body: "Tap to return to your session",
-            });
           }
         }
       }
@@ -180,7 +200,7 @@ export default function SessionScreen({ goBack, params }) {
         s.timerId = null;
         s.wakeLock?.release().catch(() => {});
         s.wakeLock = null;
-        cancelSwNotifs();
+        cancelNotifs();
         setPhase("done");
         return "done";
       }
@@ -196,6 +216,20 @@ export default function SessionScreen({ goBack, params }) {
       setRepCount(0);
     }
     return "ok";
+  }
+
+  async function rescheduleNotifs() {
+    const s = sess.current;
+    await cancelServerNotifs(s.notifIds);
+    s.notifIds = [];
+    const ids = await scheduleServerNotifs(s.queue, s.idx, s.t);
+    s.notifIds = ids;
+  }
+
+  async function cancelNotifs() {
+    const s = sess.current;
+    await cancelServerNotifs(s.notifIds);
+    s.notifIds = [];
   }
 
   function doStart() {
@@ -225,19 +259,16 @@ export default function SessionScreen({ goBack, params }) {
       })
       .catch(() => {});
 
-    // Request notification permission then schedule all phase alerts.
-    if (typeof Notification !== "undefined") {
-      if (Notification.permission === "granted") {
-        sendSwSchedule(queue, 0, s.t);
-      } else if (Notification.permission !== "denied") {
-        Notification.requestPermission().then((perm) => {
-          if (perm === "granted") {
-            const cs = sess.current;
-            sendSwSchedule(cs.queue, cs.idx, cs.t);
-          }
-        });
-      }
-    }
+    // Request notification permission then schedule all phase alerts server-side.
+    const scheduleNotifs = async () => {
+      let perm = Notification?.permission;
+      if (perm === "default") perm = await Notification.requestPermission();
+      if (perm !== "granted") return;
+      const cs = sess.current;
+      const ids = await scheduleServerNotifs(cs.queue, cs.idx, cs.t);
+      cs.notifIds = ids;
+    };
+    scheduleNotifs();
 
     s.timerId = setInterval(() => {
       const s = sess.current;
@@ -278,11 +309,11 @@ export default function SessionScreen({ goBack, params }) {
     const s = sess.current;
     s.paused = !s.paused;
     if (s.paused) {
-      cancelSwNotifs();
+      cancelNotifs();
     } else {
       // Restart the deadline from the current remaining time on resume
       s.deadline = Date.now() + s.t * 1000;
-      sendSwSchedule(s.queue, s.idx, s.t);
+      rescheduleNotifs();
     }
     setUi((prev) => ({ ...prev, isPaused: s.paused }));
   }
@@ -296,7 +327,7 @@ export default function SessionScreen({ goBack, params }) {
       s.timerId = null;
       s.wakeLock?.release().catch(() => {});
       s.wakeLock = null;
-      cancelSwNotifs();
+      cancelNotifs();
       setPhase("done");
       return;
     }
@@ -304,7 +335,7 @@ export default function SessionScreen({ goBack, params }) {
     s.t = item.duration ?? 0;
     s.deadline = Date.now() + s.t * 1000;
     if (item.type === "side_switch") speak("Switch sides");
-    sendSwSchedule(s.queue, s.idx, s.t);
+    rescheduleNotifs();
     refreshUi();
   }
 
@@ -339,7 +370,7 @@ export default function SessionScreen({ goBack, params }) {
       s.t = item.duration;
       s.deadline = Date.now() + s.t * 1000;
     }
-    sendSwSchedule(s.queue, s.idx, s.t);
+    rescheduleNotifs();
     refreshUi();
   }
 
@@ -353,7 +384,7 @@ export default function SessionScreen({ goBack, params }) {
       if (s.timerId) clearInterval(s.timerId);
       s.timerId = null;
       s.wakeLock?.release().catch(() => {});
-      cancelSwNotifs();
+      cancelNotifs();
     }
     goBack();
   }
