@@ -122,7 +122,8 @@ export default function SessionScreen({ goBack, params }) {
     timerId: null,
     wakeLock: null,
     repCount: 0,
-    notifIds: [], // QStash message IDs for cancellation
+    notifIds: [],
+    notifGen: 0, // incremented on every cancel/reschedule to invalidate in-flight requests
   });
 
   const [ui, setUi] = useState({
@@ -220,18 +221,34 @@ export default function SessionScreen({ goBack, params }) {
     return "ok";
   }
 
+  // Schedule notifications, but discard results if a cancel/reschedule
+  // happened while the request was in flight.
+  async function scheduleNotifsForGen(gen) {
+    const s = sess.current;
+    const ids = await scheduleServerNotifs(s.queue, s.idx, s.t);
+    if (sess.current.notifGen !== gen) {
+      // Superseded — cancel these immediately so they don't fire while paused
+      cancelServerNotifs(ids);
+    } else {
+      sess.current.notifIds = ids;
+    }
+  }
+
   async function rescheduleNotifs() {
     const s = sess.current;
-    await cancelServerNotifs(s.notifIds);
+    const oldIds = s.notifIds;
     s.notifIds = [];
-    const ids = await scheduleServerNotifs(s.queue, s.idx, s.t);
-    s.notifIds = ids;
+    const gen = ++s.notifGen;
+    cancelServerNotifs(oldIds);
+    await scheduleNotifsForGen(gen);
   }
 
   async function cancelNotifs() {
     const s = sess.current;
-    await cancelServerNotifs(s.notifIds);
+    const oldIds = s.notifIds;
     s.notifIds = [];
+    s.notifGen++; // invalidates any in-flight scheduleNotifsForGen
+    cancelServerNotifs(oldIds);
   }
 
   function doStart() {
@@ -262,15 +279,15 @@ export default function SessionScreen({ goBack, params }) {
       .catch(() => {});
 
     // Request notification permission then schedule all phase alerts server-side.
-    const scheduleNotifs = async () => {
+    const kickoffNotifs = async () => {
       let perm = Notification?.permission;
       if (perm === "default") perm = await Notification.requestPermission();
       if (perm !== "granted") return;
-      const cs = sess.current;
-      const ids = await scheduleServerNotifs(cs.queue, cs.idx, cs.t);
-      cs.notifIds = ids;
+      const s = sess.current;
+      const gen = ++s.notifGen;
+      await scheduleNotifsForGen(gen);
     };
-    scheduleNotifs();
+    kickoffNotifs();
 
     s.timerId = setInterval(() => {
       const s = sess.current;
