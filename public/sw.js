@@ -1,5 +1,5 @@
 // Bump this string on every deploy to force the new SW to activate
-const CACHE = "stretch-1.0.5";
+const CACHE = "stretch-1.0.6";
 
 // Pre-cache app shell on install
 self.addEventListener("install", (e) => {
@@ -85,7 +85,10 @@ self.addEventListener("message", (e) => {
     for (const item of e.data.schedule ?? []) {
       const delay = item.at - now;
       if (delay <= 0) continue;
-      const t = setTimeout(() => {
+      const t = setTimeout(async () => {
+        // Skip if the user is already back in the app
+        const cs = await clients.matchAll({ type: "window", includeUncontrolled: true });
+        if (cs.some((c) => c.visibilityState === "visible")) return;
         self.registration.showNotification(item.title, {
           body: item.body,
           icon: "/icons/icon-192.png",
@@ -96,6 +99,15 @@ self.addEventListener("message", (e) => {
       }, delay);
       notifTimers.push(t);
     }
+  }
+
+  if (e.data?.type === "SHOW_NOW") {
+    self.registration.showNotification(e.data.title, {
+      body: e.data.body,
+      icon: "/icons/icon-192.png",
+      tag: "stretch-timer",
+      silent: true,
+    });
   }
 
   if (e.data?.type === "CANCEL_NOTIFICATIONS") {

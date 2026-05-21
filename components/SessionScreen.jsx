@@ -122,6 +122,25 @@ export default function SessionScreen({ goBack, params }) {
             }
           }
         }
+      } else if (document.visibilityState === "hidden") {
+        // Show an immediate notification the moment the user leaves so there's
+        // always something in the tray — iOS suspends SW setTimeout so we can't
+        // rely on scheduled notifications firing at the right time.
+        const s = sess.current;
+        if (!s.paused && s.timerId) {
+          const item = s.queue[s.idx];
+          if (item && item.type !== "reps") {
+            const title =
+              item.type === "side_switch" ? "Switch sides!" :
+              item.type === "transition" ? `Get ready: ${item.stretchName}` :
+              item.stretchName;
+            navigator.serviceWorker?.controller?.postMessage({
+              type: "SHOW_NOW",
+              title,
+              body: "Tap to return to your session",
+            });
+          }
+        }
       }
     };
     document.addEventListener("visibilitychange", onVisible);
