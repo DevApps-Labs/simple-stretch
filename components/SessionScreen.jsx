@@ -86,6 +86,7 @@ async function scheduleServerNotifs(queue, fromIdx, tRemaining) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ subscription: sub.toJSON(), schedule }),
+      keepalive: true,
     });
     const { ids } = await res.json();
     return ids ?? [];
@@ -101,6 +102,7 @@ async function cancelServerNotifs(ids) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ids }),
+      keepalive: true,
     });
   } catch {}
 }
