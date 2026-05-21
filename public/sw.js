@@ -1,5 +1,5 @@
 // Bump this string on every deploy to force the new SW to activate
-const CACHE = "stretch-1.0.13";
+const CACHE = "stretch-1.0.14";
 
 // Pre-cache app shell on install
 self.addEventListener("install", (e) => {
@@ -78,11 +78,14 @@ self.addEventListener("fetch", (e) => {
 self.addEventListener("push", (e) => {
   const data = e.data?.json() ?? {};
   e.waitUntil(
-    self.registration.showNotification(data.title ?? "Simple Stretch", {
-      body: data.body ?? "",
-      icon: "/icons/icon-192.png",
-      tag: "stretch-timer",
-      renotify: true,
+    clients.matchAll({ type: "window", includeUncontrolled: true }).then((cs) => {
+      if (cs.some((c) => c.visibilityState === "visible")) return;
+      return self.registration.showNotification(data.title ?? "Simple Stretch", {
+        body: data.body ?? "",
+        icon: "/icons/icon-192.png",
+        tag: "stretch-timer",
+        renotify: true,
+      });
     })
   );
 });
