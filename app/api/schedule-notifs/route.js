@@ -19,7 +19,6 @@ function getNotifUrl() {
 
 export async function POST(req) {
   const notifUrl = getNotifUrl();
-  console.log("[schedule-notifs] notifUrl:", notifUrl);
 
   const { subscription, schedule } = await req.json();
   const qstash = makeQstash();
