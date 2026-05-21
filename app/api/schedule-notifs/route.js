@@ -1,7 +1,10 @@
 import { Client } from "@upstash/qstash";
 import { NextResponse } from "next/server";
 
-const qstash = new Client({ token: process.env.QSTASH_TOKEN });
+const qstash = new Client({
+  token: process.env.QSTASH_TOKEN,
+  ...(process.env.QSTASH_URL && { baseUrl: process.env.QSTASH_URL }),
+});
 
 const notifUrl = `${process.env.APP_URL}/api/send-notif`;
 
