@@ -30,6 +30,41 @@ function itemToUi(item, t, idx, queueLen, paused) {
   };
 }
 
+// Send the upcoming phase schedule to the SW so it can fire notifications
+// while the user is in another app.
+function sendSwSchedule(queue, fromIdx, tRemaining) {
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+  const ctrl = navigator.serviceWorker?.controller;
+  if (!ctrl) return;
+
+  const schedule = [];
+  let cursor = Date.now() + tRemaining * 1000;
+
+  for (let i = fromIdx + 1; i < queue.length; i++) {
+    const item = queue[i];
+    if (item.type === "reps") break;
+
+    const title =
+      item.type === "side_switch" ? "Switch sides" :
+      item.type === "transition" ? `Get ready: ${item.stretchName}` :
+      item.stretchName;
+    const body =
+      item.type === "side_switch" ? item.stretchName :
+      item.type === "transition" ? "" :
+      getPhaseLabel(item) || "";
+
+    schedule.push({ at: cursor, title, body });
+    cursor += (item.duration ?? 0) * 1000;
+  }
+  schedule.push({ at: cursor, title: "Session complete!", body: "Great job!" });
+
+  ctrl.postMessage({ type: "SCHEDULE_NOTIFICATIONS", schedule });
+}
+
+function cancelSwNotifs() {
+  navigator.serviceWorker?.controller?.postMessage({ type: "CANCEL_NOTIFICATIONS" });
+}
+
 export default function SessionScreen({ goBack, params }) {
   const { routineId } = params;
   const [routine, setRoutine] = useState(null);
@@ -40,6 +75,7 @@ export default function SessionScreen({ goBack, params }) {
     queue: [],
     idx: 0,
     t: 0,
+    deadline: 0, // absolute ms timestamp when current phase ends
     paused: false,
     timerId: null,
     wakeLock: null,
@@ -69,7 +105,24 @@ export default function SessionScreen({ goBack, params }) {
 
   useEffect(() => {
     const onVisible = () => {
-      if (document.visibilityState === "visible") resumeAudio();
+      if (document.visibilityState === "visible") {
+        resumeAudio();
+        // Close any stale notifications that fired while away
+        navigator.serviceWorker?.controller?.postMessage({ type: "CLOSE_NOTIFICATIONS" });
+        // Catch up the timer to the real elapsed time
+        const s = sess.current;
+        if (!s.paused && s.timerId) {
+          const item = s.queue[s.idx];
+          if (item && item.type !== "reps") {
+            s.t = Math.round((s.deadline - Date.now()) / 1000);
+            if (s.t <= 0) {
+              advanceQueue();
+            } else {
+              setUi((prev) => ({ ...prev, timeRemaining: s.t }));
+            }
+          }
+        }
+      }
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
@@ -93,6 +146,39 @@ export default function SessionScreen({ goBack, params }) {
     setRepCount(s.repCount);
   }
 
+  // Advance through any queue items whose deadline has already passed.
+  // Called when s.t <= 0, and also on visibility restore after backgrounding.
+  function advanceQueue() {
+    const s = sess.current;
+    while (s.idx < s.queue.length) {
+      const item = s.queue[s.idx];
+      if (item.type === "reps") break;
+      if (s.t > 0) break;
+
+      s.idx++;
+      if (s.idx >= s.queue.length) {
+        if (s.timerId) clearInterval(s.timerId);
+        s.timerId = null;
+        s.wakeLock?.release().catch(() => {});
+        s.wakeLock = null;
+        cancelSwNotifs();
+        setPhase("done");
+        return "done";
+      }
+
+      const next = s.queue[s.idx];
+      // Chain the deadline off the previous item's end time so we correctly
+      // account for how long we've been in the background.
+      s.deadline = s.deadline + (next.duration ?? 0) * 1000;
+      s.t = Math.round((s.deadline - Date.now()) / 1000);
+      s.repCount = 0;
+      if (next.type === "side_switch") speak("Switch sides");
+      setUi(itemToUi(next, Math.max(0, s.t), s.idx, s.queue.length, false));
+      setRepCount(0);
+    }
+    return "ok";
+  }
+
   function doStart() {
     if (!routine?.stretches?.length) return;
 
@@ -104,6 +190,7 @@ export default function SessionScreen({ goBack, params }) {
     s.queue = queue;
     s.idx = 0;
     s.t = queue[0].duration ?? 0;
+    s.deadline = Date.now() + s.t * 1000;
     s.paused = false;
     s.repCount = 0;
 
@@ -119,6 +206,20 @@ export default function SessionScreen({ goBack, params }) {
       })
       .catch(() => {});
 
+    // Request notification permission then schedule all phase alerts.
+    if (typeof Notification !== "undefined") {
+      if (Notification.permission === "granted") {
+        sendSwSchedule(queue, 0, s.t);
+      } else if (Notification.permission !== "denied") {
+        Notification.requestPermission().then((perm) => {
+          if (perm === "granted") {
+            const cs = sess.current;
+            sendSwSchedule(cs.queue, cs.idx, cs.t);
+          }
+        });
+      }
+    }
+
     s.timerId = setInterval(() => {
       const s = sess.current;
       if (s.paused) return;
@@ -129,36 +230,24 @@ export default function SessionScreen({ goBack, params }) {
       // Rep-based items wait for user input — don't countdown or auto-advance
       if (item.type === "reps") return;
 
-      s.t--;
+      const prevT = s.t;
+      // Use deadline-based time so the timer catches up correctly after backgrounding
+      s.t = Math.round((s.deadline - Date.now()) / 1000);
 
       // 3-beep countdown at 3, 2, 1 seconds before any timed phase ends
       if (s.t >= 1 && s.t <= 3) beep();
 
-      // "Next up" voice 10 seconds before a stretch phase ends
+      // "Next up" voice when crossing the 10-second mark
       if (
         (item.type === "stretch_full" || item.type === "stretch_second" || item.type === "rep_hold") &&
-        s.t === 10 &&
+        prevT > 10 && s.t <= 10 &&
         item.nextStretchName
       ) {
         speak(`Next up: ${item.nextStretchName}`);
       }
 
       if (s.t <= 0) {
-        s.idx++;
-        if (s.idx >= s.queue.length) {
-          clearInterval(s.timerId);
-          s.timerId = null;
-          s.wakeLock?.release().catch(() => {});
-          s.wakeLock = null;
-          setPhase("done");
-          return;
-        }
-        const next = s.queue[s.idx];
-        s.t = next.duration ?? 0;
-        s.repCount = 0;
-        if (next.type === "side_switch") speak("Switch sides");
-        setUi(itemToUi(next, s.t, s.idx, s.queue.length, false));
-        setRepCount(0);
+        advanceQueue();
         return;
       }
 
@@ -167,8 +256,16 @@ export default function SessionScreen({ goBack, params }) {
   }
 
   function doPause() {
-    sess.current.paused = !sess.current.paused;
-    setUi((prev) => ({ ...prev, isPaused: sess.current.paused }));
+    const s = sess.current;
+    s.paused = !s.paused;
+    if (s.paused) {
+      cancelSwNotifs();
+    } else {
+      // Restart the deadline from the current remaining time on resume
+      s.deadline = Date.now() + s.t * 1000;
+      sendSwSchedule(s.queue, s.idx, s.t);
+    }
+    setUi((prev) => ({ ...prev, isPaused: s.paused }));
   }
 
   function doNext() {
@@ -180,12 +277,15 @@ export default function SessionScreen({ goBack, params }) {
       s.timerId = null;
       s.wakeLock?.release().catch(() => {});
       s.wakeLock = null;
+      cancelSwNotifs();
       setPhase("done");
       return;
     }
     const item = s.queue[s.idx];
     s.t = item.duration ?? 0;
+    s.deadline = Date.now() + s.t * 1000;
     if (item.type === "side_switch") speak("Switch sides");
+    sendSwSchedule(s.queue, s.idx, s.t);
     refreshUi();
   }
 
@@ -201,6 +301,7 @@ export default function SessionScreen({ goBack, params }) {
       } else if (s.idx > 0) {
         s.idx--;
         s.t = s.queue[s.idx].duration ?? 0;
+        s.deadline = Date.now() + s.t * 1000;
         resetRepCount();
         refreshUi();
       }
@@ -210,12 +311,16 @@ export default function SessionScreen({ goBack, params }) {
     resetRepCount();
     if (s.t < item.duration - 3) {
       s.t = item.duration;
+      s.deadline = Date.now() + s.t * 1000;
     } else if (s.idx > 0) {
       s.idx--;
       s.t = s.queue[s.idx].duration ?? 0;
+      s.deadline = Date.now() + s.t * 1000;
     } else {
       s.t = item.duration;
+      s.deadline = Date.now() + s.t * 1000;
     }
+    sendSwSchedule(s.queue, s.idx, s.t);
     refreshUi();
   }
 
@@ -229,6 +334,7 @@ export default function SessionScreen({ goBack, params }) {
       if (s.timerId) clearInterval(s.timerId);
       s.timerId = null;
       s.wakeLock?.release().catch(() => {});
+      cancelSwNotifs();
     }
     goBack();
   }

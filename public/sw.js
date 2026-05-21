@@ -1,5 +1,5 @@
 // Bump this string on every deploy to force the new SW to activate
-const CACHE = "stretch-1.0.4";
+const CACHE = "stretch-1.0.5";
 
 // Pre-cache app shell on install
 self.addEventListener("install", (e) => {
@@ -70,6 +70,54 @@ self.addEventListener("fetch", (e) => {
         return res;
       });
       return cached ?? fetched;
+    })
+  );
+});
+
+// Notification scheduling for background timer alerts
+let notifTimers = [];
+
+self.addEventListener("message", (e) => {
+  if (e.data?.type === "SCHEDULE_NOTIFICATIONS") {
+    notifTimers.forEach(clearTimeout);
+    notifTimers = [];
+    const now = Date.now();
+    for (const item of e.data.schedule ?? []) {
+      const delay = item.at - now;
+      if (delay <= 0) continue;
+      const t = setTimeout(() => {
+        self.registration.showNotification(item.title, {
+          body: item.body,
+          icon: "/icons/icon-192.png",
+          tag: "stretch-timer",
+          renotify: true,
+          silent: false,
+        });
+      }, delay);
+      notifTimers.push(t);
+    }
+  }
+
+  if (e.data?.type === "CANCEL_NOTIFICATIONS") {
+    notifTimers.forEach(clearTimeout);
+    notifTimers = [];
+  }
+
+  if (e.data?.type === "CLOSE_NOTIFICATIONS") {
+    self.registration.getNotifications({ tag: "stretch-timer" }).then((ns) =>
+      ns.forEach((n) => n.close())
+    );
+  }
+});
+
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  e.waitUntil(
+    clients.matchAll({ type: "window", includeUncontrolled: true }).then((cs) => {
+      for (const c of cs) {
+        if (c.url.includes(self.location.origin)) return c.focus();
+      }
+      return clients.openWindow("/");
     })
   );
 });
