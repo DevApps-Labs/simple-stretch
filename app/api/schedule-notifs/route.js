@@ -6,7 +6,9 @@ const qstash = new Client({
   ...(process.env.QSTASH_URL && { baseUrl: process.env.QSTASH_URL }),
 });
 
-const notifUrl = `${process.env.APP_URL}/api/send-notif`;
+const baseUrl = process.env.APP_URL ??
+  (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
+const notifUrl = `${baseUrl}/api/send-notif`;
 
 export async function POST(req) {
   const { subscription, schedule } = await req.json();
