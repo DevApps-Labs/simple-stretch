@@ -171,7 +171,9 @@ export default function SessionScreen({ goBack, params }) {
       document.removeEventListener("visibilitychange", onVisible);
       const s = sess.current;
       if (s.timerId) clearInterval(s.timerId);
+      s.timerId = null;
       s.wakeLock?.release().catch(() => {});
+      cancelNotifs();
     };
   }, []);
 
