@@ -24,6 +24,7 @@ const SCHEMA_TEXT = `{
           "reps": 10,                 // [reps, rep_hold] Number of reps
           "holdPerRep": 8,            // [rep_hold] Seconds to hold each rep
           "instructions": "string",   // [reps, rep_hold] Optional reminder text
+          "gifUrl": "string",         // Optional GIF/image URL shown during exercise
           "switchSides": true,        // If true, repeat on each side separately
           "transitionTime": 5         // Prep seconds before exercise starts
         }
@@ -102,64 +103,75 @@ const LIMBER11_TEXT = `{
           "id": "s-l1", "libraryId": "l1", "name": "Foam Roll IT Band",
           "exerciseType": "reps", "reps": 12,
           "instructions": "Slow passes along the outer thigh",
+          "gifUrl": "https://i.imgur.com/Kqdnf7r.gif",
           "switchSides": true, "transitionTime": 5
         },
         {
           "id": "s-l2", "libraryId": "l2", "name": "Foam Roll Adductors",
           "exerciseType": "reps", "reps": 12,
           "instructions": "Roll inner thigh from hip to knee",
+          "gifUrl": "https://i.imgur.com/kC5YQWJ.gif",
           "switchSides": true, "transitionTime": 5
         },
         {
           "id": "s-l3", "libraryId": "l3", "name": "Lacrosse Ball Glutes",
           "exerciseType": "timed", "duration": 60,
+          "gifUrl": "https://i.imgur.com/oJOi6t8.gif",
           "switchSides": true, "transitionTime": 5
         },
         {
           "id": "s-l4", "libraryId": "l4", "name": "Bent-Knee Iron Crosses",
           "exerciseType": "reps", "reps": 15,
           "instructions": "Knees sweep left and right, shoulders stay flat",
+          "gifUrl": "https://i.imgur.com/tRZxRZ7.gif",
           "switchSides": false, "transitionTime": 5
         },
         {
           "id": "s-l5", "libraryId": "l5", "name": "Rollovers into V-Sits",
           "exerciseType": "reps", "reps": 10,
           "instructions": "Roll back over hips, then forward into V-sit",
+          "gifUrl": "https://i.imgur.com/KduHp43.gif",
           "switchSides": false, "transitionTime": 5
         },
         {
           "id": "s-l6", "libraryId": "l6", "name": "Rocking Frog Stretch",
           "exerciseType": "reps", "reps": 10,
           "instructions": "Knees wide, rock forward into frog and back",
+          "gifUrl": "https://i.imgur.com/OsX8ztP.gif",
           "switchSides": false, "transitionTime": 5
         },
         {
           "id": "s-l7", "libraryId": "l7", "name": "Fire Hydrant Circles",
           "exerciseType": "reps", "reps": 20,
           "instructions": "10 circles forward + 10 backward per leg",
+          "gifUrl": "https://i.imgur.com/E6j7Bov.gif",
           "switchSides": true, "transitionTime": 5
         },
         {
           "id": "s-l8", "libraryId": "l8", "name": "Mountain Climbers",
           "exerciseType": "reps", "reps": 20,
           "instructions": "Drive each knee to chest, 10 reps per leg",
+          "gifUrl": "https://i.imgur.com/1hgnQwi.gif",
           "switchSides": false, "transitionTime": 5
         },
         {
           "id": "s-l9", "libraryId": "l9", "name": "Cossack Squats",
           "exerciseType": "reps", "reps": 8,
           "instructions": "Lateral squat, alternating sides each rep",
+          "gifUrl": "https://i.imgur.com/QhVGZ8Y.gif",
           "switchSides": false, "transitionTime": 5
         },
         {
           "id": "s-l10", "libraryId": "l10", "name": "Seated Piriformis Stretch",
           "exerciseType": "timed", "duration": 30,
+          "gifUrl": "https://i.imgur.com/gG3Kpy4.gif",
           "switchSides": true, "transitionTime": 5
         },
         {
           "id": "s-l11", "libraryId": "l11", "name": "RFE Hip Flexor Stretch",
           "exerciseType": "rep_hold", "reps": 7, "holdPerRep": 3,
           "instructions": "Rear foot elevated, drive hips forward",
+          "gifUrl": "https://i.imgur.com/WdqxaWd.gif",
           "switchSides": true, "transitionTime": 5
         }
       ]
@@ -255,6 +267,7 @@ const AI_PROMPT_TEXT = `You are helping me build a stretch/exercise routine for 
           "reps": <count>,                // reps and rep_hold
           "holdPerRep": <seconds>,        // rep_hold only
           "instructions": "<reminder>",  // optional for reps/rep_hold
+          "gifUrl": "<url>",             // optional GIF shown during exercise
           "switchSides": <true|false>,
           "transitionTime": <prep seconds>
         }
@@ -278,14 +291,18 @@ Please guide me through creating a routine step by step:
    c. Any instructions or reminder text to show on screen during the exercise
    d. Does it switch sides? (left/right — the app will cue each side separately)
    e. Transition/prep time before the exercise starts (typically 3–10s)
-4. After all exercises are entered, show a summary and ask me to confirm.
-5. Once confirmed, output the complete valid JSON ready to paste into Simple Stretch's Import JSON dialog.
+4. After collecting all exercises, ask: "Would you like me to find demo GIFs for these exercises? I can search for animated GIFs showing proper form and include them in the JSON so they display during each exercise in the app."
+   - If yes: search the web for each exercise and find a direct GIF URL (preferably from i.imgur.com or a CDN). Include "gifUrl" on each stretch that has one.
+   - If no: omit the gifUrl field entirely.
+5. After all exercises are entered, show a summary and ask me to confirm.
+6. Once confirmed, output the complete valid JSON ready to paste into Simple Stretch's Import JSON dialog.
 
 Rules for the JSON output:
 - Use short unique IDs (e.g. "r1", "lib1", "s1", etc.)
 - Every exercise in the routine must have a matching library entry with the same libraryId
 - Use a realistic createdAt value (13-digit Unix ms timestamp, e.g. 1716000000000)
 - For the McGill Big Three pyramid (5→3→1), create each set as a separate routine entry — the instructions field can remind the user which set it is
+- gifUrl must be a direct URL to a GIF or image (ends in .gif, .webp, .jpg, etc.) — not a page URL
 
 Start now: ask me what I'd like to name my routine.`;
 

@@ -27,6 +27,7 @@ function itemToUi(item, t, idx, queueLen, paused) {
     itemType: item.type,
     reps: item.reps ?? 0,
     instructions: item.instructions ?? "",
+    gifUrl: item.gifUrl ?? null,
   };
 }
 
@@ -495,9 +496,18 @@ export default function SessionScreen({ goBack, params }) {
             <div className="mb-3 h-5" />
           )}
 
-          <h2 className="text-3xl font-bold text-white text-center mb-4 leading-tight">
+          <h2 className="text-3xl font-bold text-white text-center mb-3 leading-tight">
             {ui.stretchName}
           </h2>
+
+          {ui.gifUrl && (
+            <img
+              src={ui.gifUrl}
+              alt=""
+              className="max-h-28 w-auto mx-auto rounded-xl mb-3 object-contain"
+              onError={(e) => { e.target.style.display = "none"; }}
+            />
+          )}
 
           {ui.instructions ? (
             <p className="text-sm text-neutral-400 text-center mb-8 leading-relaxed max-w-xs">
@@ -546,9 +556,18 @@ export default function SessionScreen({ goBack, params }) {
             <div className="mb-3 h-5" />
           )}
 
-          <h2 className="text-3xl font-bold text-white text-center mb-8 leading-tight">
+          <h2 className="text-3xl font-bold text-white text-center mb-3 leading-tight">
             {ui.stretchName}
           </h2>
+
+          {ui.gifUrl && (
+            <img
+              src={ui.gifUrl}
+              alt=""
+              className="max-h-28 w-auto mx-auto rounded-xl mb-3 object-contain"
+              onError={(e) => { e.target.style.display = "none"; }}
+            />
+          )}
 
           <div className="text-8xl font-mono font-bold text-teal-400 tabular-nums leading-none mb-8">
             {formatTime(ui.timeRemaining)}

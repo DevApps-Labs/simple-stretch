@@ -255,6 +255,30 @@ export default function StretchConfigScreen({ goBack, params }) {
           </div>
         </div>
 
+        {/* Demo GIF */}
+        <div className="bg-neutral-900 rounded-2xl p-4">
+          <p className="font-semibold text-white mb-1">Demo GIF</p>
+          <p className="text-xs text-neutral-500 mb-3">
+            Optional — shown during the exercise
+          </p>
+          {stretch.gifUrl ? (
+            <img
+              src={stretch.gifUrl}
+              alt=""
+              className="w-full rounded-xl mb-3 object-contain"
+              style={{ maxHeight: "120px" }}
+              onError={(e) => { e.target.style.display = "none"; }}
+            />
+          ) : null}
+          <input
+            type="url"
+            value={stretch.gifUrl ?? ""}
+            onChange={(e) => updateStretch({ gifUrl: e.target.value || undefined })}
+            placeholder="https://i.imgur.com/..."
+            className="w-full bg-neutral-800 text-neutral-200 text-sm rounded-xl p-3 border border-neutral-700 focus:border-teal-500 focus:outline-none"
+          />
+        </div>
+
         {/* Transition Time */}
         <div className="bg-neutral-900 rounded-2xl p-4">
           <div className="flex items-center justify-between mb-4">
