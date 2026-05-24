@@ -196,48 +196,57 @@ const MCGILL_TEXT = `{
           "id": "s-curl-5", "libraryId": "m-curl", "name": "Modified Curl-Up",
           "exerciseType": "rep_hold", "reps": 5, "holdPerRep": 8,
           "instructions": "Hands under lower back, lift head a few inches — no crunching",
+          "gifUrl": "https://www.ptprogress.com/wp-content/uploads/2021/06/Modified-Curl-Up-2.gif",
           "switchSides": false, "transitionTime": 5
         },
         {
           "id": "s-curl-3", "libraryId": "m-curl", "name": "Modified Curl-Up",
           "exerciseType": "rep_hold", "reps": 3, "holdPerRep": 8,
           "instructions": "Switch which knee is bent from the previous set",
+          "gifUrl": "https://www.ptprogress.com/wp-content/uploads/2021/06/Modified-Curl-Up-2.gif",
           "switchSides": false, "transitionTime": 10
         },
         {
           "id": "s-curl-1", "libraryId": "m-curl", "name": "Modified Curl-Up",
           "exerciseType": "rep_hold", "reps": 1, "holdPerRep": 8,
+          "gifUrl": "https://www.ptprogress.com/wp-content/uploads/2021/06/Modified-Curl-Up-2.gif",
           "switchSides": false, "transitionTime": 10
         },
         {
           "id": "s-side-5", "libraryId": "m-side", "name": "Side Plank",
           "exerciseType": "rep_hold", "reps": 5, "holdPerRep": 8,
+          "gifUrl": "https://www.ptprogress.com/wp-content/uploads/2021/06/Side-BridgePlank.gif",
           "switchSides": true, "transitionTime": 10
         },
         {
           "id": "s-side-3", "libraryId": "m-side", "name": "Side Plank",
           "exerciseType": "rep_hold", "reps": 3, "holdPerRep": 8,
+          "gifUrl": "https://www.ptprogress.com/wp-content/uploads/2021/06/Side-BridgePlank.gif",
           "switchSides": true, "transitionTime": 10
         },
         {
           "id": "s-side-1", "libraryId": "m-side", "name": "Side Plank",
           "exerciseType": "rep_hold", "reps": 1, "holdPerRep": 8,
+          "gifUrl": "https://www.ptprogress.com/wp-content/uploads/2021/06/Side-BridgePlank.gif",
           "switchSides": true, "transitionTime": 10
         },
         {
           "id": "s-bird-5", "libraryId": "m-bird", "name": "Bird Dog",
           "exerciseType": "rep_hold", "reps": 5, "holdPerRep": 8,
           "instructions": "Extend opposite arm and leg, hold flat and stable",
+          "gifUrl": "https://www.ptprogress.com/wp-content/uploads/2021/06/BirdDog-Exercise.gif",
           "switchSides": true, "transitionTime": 10
         },
         {
           "id": "s-bird-3", "libraryId": "m-bird", "name": "Bird Dog",
           "exerciseType": "rep_hold", "reps": 3, "holdPerRep": 8,
+          "gifUrl": "https://www.ptprogress.com/wp-content/uploads/2021/06/BirdDog-Exercise.gif",
           "switchSides": true, "transitionTime": 10
         },
         {
           "id": "s-bird-1", "libraryId": "m-bird", "name": "Bird Dog",
           "exerciseType": "rep_hold", "reps": 1, "holdPerRep": 8,
+          "gifUrl": "https://www.ptprogress.com/wp-content/uploads/2021/06/BirdDog-Exercise.gif",
           "switchSides": true, "transitionTime": 10
         }
       ]
@@ -291,8 +300,8 @@ Please guide me through creating a routine step by step:
    c. Any instructions or reminder text to show on screen during the exercise
    d. Does it switch sides? (left/right — the app will cue each side separately)
    e. Transition/prep time before the exercise starts (typically 3–10s)
-4. After collecting all exercises, ask: "Would you like me to find demo GIFs for these exercises? I can search for animated GIFs showing proper form and include them in the JSON so they display during each exercise in the app."
-   - If yes: search the web for each exercise and find a direct GIF URL (preferably from i.imgur.com or a CDN). Include "gifUrl" on each stretch that has one.
+4. After collecting all exercises, ask: "Do you have any demo GIF URLs to attach? If so, share the direct image URL (ending in .gif, .webp, .jpg, etc.) for each exercise and I'll include it in the JSON so it displays during the exercise."
+   - If yes: add each provided URL as the "gifUrl" field on the matching stretch.
    - If no: omit the gifUrl field entirely.
 5. After all exercises are entered, show a summary and ask me to confirm.
 6. Once confirmed, output the complete valid JSON ready to paste into Simple Stretch's Import JSON dialog.
