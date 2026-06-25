@@ -213,17 +213,17 @@ function ImportModal({ onClose, onImport }) {
         throw new Error("Invalid backup file");
       if (!Array.isArray(imported.library)) imported.library = [];
       const existing = loadData();
-      const existingIds = new Set(existing.routines.map((r) => r.id));
-      const existingLibIds = new Set(existing.library.map((e) => e.id));
+      const importedRoutineIds = new Set(imported.routines.map((r) => r.id));
+      const importedLibIds = new Set(imported.library.map((e) => e.id));
       const merged = {
         ...existing,
         routines: [
-          ...existing.routines,
-          ...imported.routines.filter((r) => !existingIds.has(r.id)),
+          ...existing.routines.filter((r) => !importedRoutineIds.has(r.id)),
+          ...imported.routines,
         ],
         library: [
-          ...existing.library,
-          ...imported.library.filter((e) => !existingLibIds.has(e.id)),
+          ...existing.library.filter((e) => !importedLibIds.has(e.id)),
+          ...imported.library,
         ],
       };
       saveData(merged);
