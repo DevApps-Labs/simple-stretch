@@ -57,7 +57,8 @@ function buildNotifSchedule(queue, fromIdx, tRemaining) {
   const schedule = [];
   let cursor = Date.now() + tRemaining * 1000;
 
-  for (let i = fromIdx + 1; i < queue.length; i++) {
+  let i = fromIdx + 1;
+  for (; i < queue.length; i++) {
     const item = queue[i];
     if (item.type === "reps") break;
 
@@ -73,7 +74,11 @@ function buildNotifSchedule(queue, fromIdx, tRemaining) {
     schedule.push({ at: cursor, title, body });
     cursor += (item.duration ?? 0) * 1000;
   }
-  schedule.push({ at: cursor, title: "Session complete!", body: "Great job!" });
+  // Only the routine's true end reaches here without being cut short by a
+  // reps item (whose duration is user-paced and unknown ahead of time).
+  if (i >= queue.length) {
+    schedule.push({ at: cursor, title: "Session complete!", body: "Great job!" });
+  }
 
   return schedule;
 }
@@ -228,6 +233,14 @@ export default function SessionScreen({ goBack, params }) {
   // happened while the request was in flight.
   async function scheduleNotifsForGen(gen) {
     const s = sess.current;
+    const currentItem = s.queue[s.idx];
+    // Reps items are user-paced (duration 0, no real deadline) — scheduling
+    // "at now + 0" would fire the next notification immediately. Wait until
+    // the user advances to a timed item before scheduling anything.
+    if (!currentItem || currentItem.type === "reps") {
+      s.notifIds = [];
+      return;
+    }
     const ids = await scheduleServerNotifs(s.queue, s.idx, s.t);
     if (sess.current.notifGen !== gen) {
       // Superseded — cancel these immediately so they don't fire while paused
