@@ -1,6 +1,11 @@
 "use client";
 import { useState, useEffect, useRef } from "react";
-import { loadData } from "@/lib/storage";
+import {
+  loadData,
+  saveSessionState,
+  loadSessionState,
+  clearSessionState,
+} from "@/lib/storage";
 import {
   buildQueue,
   getPhaseLabel,
@@ -101,8 +106,15 @@ async function scheduleServerNotifs(queue, fromIdx, tRemaining) {
   }
 }
 
+// Beyond this age, an in-progress session found in storage is treated as
+// abandoned rather than resumable.
+const SESSION_STALE_MS = 4 * 60 * 60 * 1000;
+
+// Returns whether the cancellation request actually went through — callers
+// use this to decide whether it's safe to stop tracking these ids, or
+// whether they need to stay persisted so a future sweep can retry.
 async function cancelServerNotifs(ids) {
-  if (!ids?.length) return;
+  if (!ids?.length) return true;
   try {
     await fetch("/api/cancel-notifs", {
       method: "POST",
@@ -110,7 +122,10 @@ async function cancelServerNotifs(ids) {
       body: JSON.stringify({ ids }),
       keepalive: true,
     });
-  } catch {}
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export default function SessionScreen({ goBack, params }) {
@@ -148,10 +163,58 @@ export default function SessionScreen({ goBack, params }) {
   // Rep counter for reps-type items — kept in sync with sess.current.repCount
   const [repCount, setRepCount] = useState(0);
 
+  // A resumable session found in storage for this exact routine, offered on
+  // the pre-start screen instead of silently discarded.
+  const [resumeState, setResumeState] = useState(null);
+
   useEffect(() => {
     const data = loadData();
-    setRoutine(data.routines.find((r) => r.id === routineId) ?? null);
+    const found = data.routines.find((r) => r.id === routineId) ?? null;
+    setRoutine(found);
+
+    const saved = loadSessionState();
+    if (!saved) return;
+    const isStale = Date.now() - (saved.updatedAt ?? 0) > SESSION_STALE_MS;
+    if (
+      !saved.ended &&
+      saved.routineId === routineId &&
+      !isStale &&
+      found?.stretches?.length
+    ) {
+      setResumeState(saved);
+    } else {
+      // Belongs to a different/finished routine, already ended, or too old
+      // to trust — make sure nothing it scheduled is still able to fire.
+      cancelServerNotifs(saved.notifIds).then((ok) => {
+        if (ok) {
+          clearSessionState();
+        } else {
+          saveSessionState({
+            routineId: saved.routineId,
+            notifIds: saved.notifIds,
+            ended: true,
+            updatedAt: Date.now(),
+          });
+        }
+      });
+    }
   }, [routineId]);
+
+  // Snapshot enough of the in-progress session to survive a reload, and to
+  // let a future boot cancel any notifications still scheduled server-side.
+  function persistSession(overrides = {}) {
+    const s = sess.current;
+    saveSessionState({
+      routineId,
+      idx: s.idx,
+      deadline: s.deadline,
+      paused: s.paused,
+      repCount: s.repCount,
+      notifIds: s.notifIds,
+      updatedAt: Date.now(),
+      ...overrides,
+    });
+  }
 
   useEffect(() => {
     const onVisible = () => {
@@ -211,7 +274,7 @@ export default function SessionScreen({ goBack, params }) {
         s.timerId = null;
         s.wakeLock?.release().catch(() => {});
         s.wakeLock = null;
-        cancelNotifs();
+        endSession();
         setPhase("done");
         return "done";
       }
@@ -226,6 +289,7 @@ export default function SessionScreen({ goBack, params }) {
       setUi(itemToUi(next, Math.max(0, s.t), s.idx, s.queue.length, false));
       setRepCount(0);
     }
+    persistSession();
     return "ok";
   }
 
@@ -239,6 +303,7 @@ export default function SessionScreen({ goBack, params }) {
     // the user advances to a timed item before scheduling anything.
     if (!currentItem || currentItem.type === "reps") {
       s.notifIds = [];
+      persistSession();
       return;
     }
     const ids = await scheduleServerNotifs(s.queue, s.idx, s.t);
@@ -247,6 +312,7 @@ export default function SessionScreen({ goBack, params }) {
       cancelServerNotifs(ids);
     } else {
       sess.current.notifIds = ids;
+      persistSession();
     }
   }
 
@@ -264,7 +330,80 @@ export default function SessionScreen({ goBack, params }) {
     const oldIds = s.notifIds;
     s.notifIds = [];
     s.notifGen++; // invalidates any in-flight scheduleNotifsForGen
-    cancelServerNotifs(oldIds);
+    const ok = await cancelServerNotifs(oldIds);
+    // If cancellation failed, keep the ids in storage (even though we've
+    // stopped tracking them in memory) so a future boot sweep retries —
+    // otherwise a failed fetch here means they'd never get cancelled at all.
+    persistSession({ notifIds: ok ? [] : oldIds });
+  }
+
+  // Used when the session is ending for good (finished or explicitly exited)
+  // rather than just pausing. Unlike cancelNotifs(), this doesn't leave a
+  // resumable record behind — but if cancellation fails, it still leaves a
+  // non-resumable "ended" marker carrying the ids so a future boot sweep can
+  // retry, instead of clearing storage and losing track of them entirely.
+  async function endSession() {
+    const s = sess.current;
+    const oldIds = s.notifIds;
+    s.notifIds = [];
+    s.notifGen++;
+    const ok = await cancelServerNotifs(oldIds);
+    if (ok) {
+      clearSessionState();
+    } else {
+      saveSessionState({
+        routineId,
+        notifIds: oldIds,
+        ended: true,
+        updatedAt: Date.now(),
+      });
+    }
+  }
+
+  // Shared per-second countdown tick, used both for a fresh start and for
+  // resuming a session found in storage after a reload.
+  function tick() {
+    const s = sess.current;
+    if (s.paused) return;
+
+    const item = s.queue[s.idx];
+    if (!item) return;
+
+    // Rep-based items wait for user input — don't countdown or auto-advance
+    if (item.type === "reps") return;
+
+    const prevT = s.t;
+    // Use deadline-based time so the timer catches up correctly after backgrounding
+    s.t = Math.round((s.deadline - Date.now()) / 1000);
+
+    // 3-beep countdown at 3, 2, 1 seconds before any timed phase ends
+    if (s.t >= 1 && s.t <= 3) beep();
+
+    // "Next up" voice when crossing the 10-second mark
+    if (
+      (item.type === "stretch_full" || item.type === "stretch_second" || item.type === "rep_hold") &&
+      prevT > 10 && s.t <= 10 &&
+      item.nextStretchName
+    ) {
+      speak(`Next up: ${item.nextStretchName}`);
+    }
+
+    if (s.t <= 0) {
+      advanceQueue();
+      return;
+    }
+
+    setUi((prev) => ({ ...prev, timeRemaining: s.t }));
+  }
+
+  // Request notification permission then schedule all phase alerts server-side.
+  async function kickoffNotifs() {
+    let perm = Notification?.permission;
+    if (perm === "default") perm = await Notification.requestPermission();
+    if (perm !== "granted") return;
+    const s = sess.current;
+    const gen = ++s.notifGen;
+    await scheduleNotifsForGen(gen);
   }
 
   function doStart() {
@@ -281,11 +420,14 @@ export default function SessionScreen({ goBack, params }) {
     s.deadline = Date.now() + s.t * 1000;
     s.paused = false;
     s.repCount = 0;
+    s.notifIds = [];
 
     const first = queue[0];
     setUi(itemToUi(first, s.t, 0, queue.length, false));
     setRepCount(0);
     setPhase("active");
+    setResumeState(null);
+    persistSession();
 
     navigator.wakeLock
       ?.request("screen")
@@ -294,50 +436,56 @@ export default function SessionScreen({ goBack, params }) {
       })
       .catch(() => {});
 
-    // Request notification permission then schedule all phase alerts server-side.
-    const kickoffNotifs = async () => {
-      let perm = Notification?.permission;
-      if (perm === "default") perm = await Notification.requestPermission();
-      if (perm !== "granted") return;
-      const s = sess.current;
-      const gen = ++s.notifGen;
-      await scheduleNotifsForGen(gen);
-    };
     kickoffNotifs();
+    s.timerId = setInterval(tick, 1000);
+  }
 
-    s.timerId = setInterval(() => {
-      const s = sess.current;
-      if (s.paused) return;
+  // Resume a session found in storage — same setup as doStart, but picking
+  // up from the saved index/deadline instead of the top of the routine.
+  function doResume(saved, routineArg) {
+    if (!routineArg?.stretches?.length) return;
 
-      const item = s.queue[s.idx];
-      if (!item) return;
+    unlockAudio();
+    warmupSpeech();
 
-      // Rep-based items wait for user input — don't countdown or auto-advance
-      if (item.type === "reps") return;
+    const s = sess.current;
+    const queue = buildQueue(routineArg);
+    s.queue = queue;
+    s.idx = Math.min(saved.idx ?? 0, queue.length - 1);
+    s.paused = !!saved.paused;
+    s.repCount = saved.repCount ?? 0;
+    s.notifIds = []; // old ids are stale/expired — we'll build a fresh schedule below
 
-      const prevT = s.t;
-      // Use deadline-based time so the timer catches up correctly after backgrounding
+    const item = queue[s.idx];
+    if (item.type === "reps") {
+      s.t = 0;
+      s.deadline = Date.now();
+    } else {
+      s.deadline = saved.deadline;
       s.t = Math.round((s.deadline - Date.now()) / 1000);
+    }
 
-      // 3-beep countdown at 3, 2, 1 seconds before any timed phase ends
-      if (s.t >= 1 && s.t <= 3) beep();
+    setUi(itemToUi(item, Math.max(0, s.t), s.idx, queue.length, s.paused));
+    setRepCount(s.repCount);
+    setPhase("active");
+    setResumeState(null);
+    persistSession();
 
-      // "Next up" voice when crossing the 10-second mark
-      if (
-        (item.type === "stretch_full" || item.type === "stretch_second" || item.type === "rep_hold") &&
-        prevT > 10 && s.t <= 10 &&
-        item.nextStretchName
-      ) {
-        speak(`Next up: ${item.nextStretchName}`);
-      }
+    navigator.wakeLock
+      ?.request("screen")
+      .then((wl) => {
+        if (sess.current) sess.current.wakeLock = wl;
+      })
+      .catch(() => {});
 
-      if (s.t <= 0) {
-        advanceQueue();
-        return;
-      }
+    s.timerId = setInterval(tick, 1000);
 
-      setUi((prev) => ({ ...prev, timeRemaining: s.t }));
-    }, 1000);
+    // Catch up immediately if the deadline already passed while we were away.
+    if (item.type !== "reps" && s.t <= 0) {
+      advanceQueue();
+    }
+
+    if (!s.paused) kickoffNotifs();
   }
 
   function doPause() {
@@ -350,6 +498,7 @@ export default function SessionScreen({ goBack, params }) {
       s.deadline = Date.now() + s.t * 1000;
       rescheduleNotifs();
     }
+    persistSession();
     setUi((prev) => ({ ...prev, isPaused: s.paused }));
   }
 
@@ -362,7 +511,7 @@ export default function SessionScreen({ goBack, params }) {
       s.timerId = null;
       s.wakeLock?.release().catch(() => {});
       s.wakeLock = null;
-      cancelNotifs();
+      endSession();
       setPhase("done");
       return;
     }
@@ -370,6 +519,7 @@ export default function SessionScreen({ goBack, params }) {
     s.t = item.duration ?? 0;
     s.deadline = Date.now() + s.t * 1000;
     if (item.type === "side_switch") speak("Switch sides");
+    persistSession();
     rescheduleNotifs();
     refreshUi();
   }
@@ -383,11 +533,13 @@ export default function SessionScreen({ goBack, params }) {
     if (item.type === "reps") {
       if (s.repCount > 0) {
         resetRepCount();
+        persistSession();
       } else if (s.idx > 0) {
         s.idx--;
         s.t = s.queue[s.idx].duration ?? 0;
         s.deadline = Date.now() + s.t * 1000;
         resetRepCount();
+        persistSession();
         refreshUi();
       }
       return;
@@ -405,6 +557,7 @@ export default function SessionScreen({ goBack, params }) {
       s.t = item.duration;
       s.deadline = Date.now() + s.t * 1000;
     }
+    persistSession();
     rescheduleNotifs();
     refreshUi();
   }
@@ -419,7 +572,7 @@ export default function SessionScreen({ goBack, params }) {
       if (s.timerId) clearInterval(s.timerId);
       s.timerId = null;
       s.wakeLock?.release().catch(() => {});
-      cancelNotifs();
+      endSession();
     }
     goBack();
   }
@@ -433,7 +586,15 @@ export default function SessionScreen({ goBack, params }) {
   }
 
   if (phase === "pre") {
-    return <PreScreen routine={routine} onStart={doStart} onBack={goBack} />;
+    return (
+      <PreScreen
+        routine={routine}
+        onStart={doStart}
+        onResume={() => doResume(resumeState, routine)}
+        resumeState={resumeState}
+        onBack={goBack}
+      />
+    );
   }
 
   if (phase === "done") {
@@ -694,7 +855,7 @@ export default function SessionScreen({ goBack, params }) {
   );
 }
 
-function PreScreen({ routine, onStart, onBack }) {
+function PreScreen({ routine, onStart, onResume, resumeState, onBack }) {
   const count = routine.stretches.length;
   const totalSec = totalRoutineSeconds(routine);
 
@@ -736,6 +897,24 @@ function PreScreen({ routine, onStart, onBack }) {
         <p className="text-neutral-600 text-center">
           Add exercises to this routine first.
         </p>
+      ) : resumeState ? (
+        <div className="flex flex-col items-center gap-3 w-full max-w-xs">
+          <p className="text-sm text-neutral-500 text-center -mt-6 mb-2">
+            You left this routine in progress.
+          </p>
+          <button
+            onClick={onResume}
+            className="w-full bg-teal-500 active:bg-teal-600 text-black font-bold text-lg py-4 rounded-2xl"
+          >
+            Resume Session
+          </button>
+          <button
+            onClick={onStart}
+            className="text-neutral-500 active:text-neutral-300 text-sm py-2"
+          >
+            Start Over Instead
+          </button>
+        </div>
       ) : (
         <button
           onClick={onStart}
