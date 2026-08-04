@@ -9,6 +9,10 @@ const qstash = new Client({
 export async function POST(req) {
   const { ids } = await req.json();
   if (!ids?.length) return NextResponse.json({ ok: true });
-  await Promise.allSettled(ids.map((id) => qstash.messages.delete(id)));
+  // Best-effort: ids that already fired make this throw, and the service
+  // worker's token check is what actually guarantees nothing stale shows.
+  try {
+    await qstash.messages.cancel(ids);
+  } catch {}
   return NextResponse.json({ ok: true });
 }

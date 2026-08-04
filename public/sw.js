@@ -1,5 +1,20 @@
 // Bump this string on every deploy to force the new SW to activate
-const CACHE = "stretch-1.0.18";
+const CACHE = "stretch-1.0.22";
+
+// Written by the page (lib/notifToken.js), read here. Holds the session
+// generation whose notifications are currently allowed to show.
+const NOTIF_TOKEN_CACHE = "notif-token";
+const NOTIF_TOKEN_URL = "/__notif-token";
+
+async function currentNotifToken() {
+  try {
+    const cache = await caches.open(NOTIF_TOKEN_CACHE);
+    const res = await cache.match(NOTIF_TOKEN_URL);
+    return res ? await res.json() : null;
+  } catch {
+    return null;
+  }
+}
 
 // Pre-cache app shell on install
 self.addEventListener("install", (e) => {
@@ -24,7 +39,11 @@ self.addEventListener("activate", (e) => {
     caches
       .keys()
       .then((keys) =>
-        Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))
+        Promise.all(
+          keys
+            .filter((k) => k !== CACHE && k !== NOTIF_TOKEN_CACHE)
+            .map((k) => caches.delete(k))
+        )
       )
       .then(() => self.clients.claim())
   );
@@ -78,15 +97,34 @@ self.addEventListener("fetch", (e) => {
 self.addEventListener("push", (e) => {
   const data = e.data?.json() ?? {};
   e.waitUntil(
-    clients.matchAll({ type: "window", includeUncontrolled: true }).then((cs) => {
+    (async () => {
+      // Drop anything belonging to a session that has since been paused,
+      // exited, finished, or superseded by a reschedule. Queued messages
+      // outlive the client that created them, so this check — not the cancel
+      // request, which is only best-effort — is what stops stale alerts.
+      const token = await currentNotifToken();
+      if (
+        !token ||
+        !data.token ||
+        token.id !== data.token.id ||
+        token.gen !== data.token.gen
+      ) {
+        return;
+      }
+
+      const cs = await clients.matchAll({
+        type: "window",
+        includeUncontrolled: true,
+      });
       if (cs.some((c) => c.visibilityState === "visible")) return;
-      return self.registration.showNotification(data.title ?? "Simple Stretch", {
+
+      await self.registration.showNotification(data.title ?? "Simple Stretch", {
         body: data.body ?? "",
         icon: "/icons/icon-192.png",
         tag: "stretch-timer",
         renotify: true,
       });
-    })
+    })()
   );
 });
 

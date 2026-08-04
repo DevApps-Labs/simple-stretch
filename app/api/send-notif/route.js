@@ -23,12 +23,14 @@ export async function POST(req) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
   }
 
-  const { subscription, title, body } = JSON.parse(rawBody);
+  const { subscription, title, body, token } = JSON.parse(rawBody);
 
   try {
     await webpush.sendNotification(
       subscription,
-      JSON.stringify({ title, body })
+      // token travels through to the service worker, which drops the push if
+      // the session that scheduled it is no longer the live one.
+      JSON.stringify({ title, body, token })
     );
     return NextResponse.json({ ok: true });
   } catch (err) {

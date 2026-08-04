@@ -2,10 +2,12 @@
 import { useState, useEffect, useRef } from "react";
 import {
   loadData,
+  generateId,
   saveSessionState,
   loadSessionState,
   clearSessionState,
 } from "@/lib/storage";
+import { setNotifToken, clearNotifToken } from "@/lib/notifToken";
 import {
   buildQueue,
   getPhaseLabel,
@@ -58,9 +60,12 @@ async function getPushSub() {
   return sub;
 }
 
+// Offsets are relative to the moment the schedule request is sent, not
+// absolute timestamps — the server publishes against its own clock, and any
+// skew between it and the phone would shift every alert by the same amount.
 function buildNotifSchedule(queue, fromIdx, tRemaining) {
   const schedule = [];
-  let cursor = Date.now() + tRemaining * 1000;
+  let afterMs = Math.max(0, tRemaining) * 1000;
 
   let i = fromIdx + 1;
   for (; i < queue.length; i++) {
@@ -76,19 +81,19 @@ function buildNotifSchedule(queue, fromIdx, tRemaining) {
       item.type === "transition" ? "" :
       getPhaseLabel(item) || "";
 
-    schedule.push({ at: cursor, title, body });
-    cursor += (item.duration ?? 0) * 1000;
+    schedule.push({ afterMs, title, body });
+    afterMs += (item.duration ?? 0) * 1000;
   }
   // Only the routine's true end reaches here without being cut short by a
   // reps item (whose duration is user-paced and unknown ahead of time).
   if (i >= queue.length) {
-    schedule.push({ at: cursor, title: "Session complete!", body: "Great job!" });
+    schedule.push({ afterMs, title: "Session complete!", body: "Great job!" });
   }
 
   return schedule;
 }
 
-async function scheduleServerNotifs(queue, fromIdx, tRemaining) {
+async function scheduleServerNotifs(queue, fromIdx, tRemaining, token) {
   try {
     const sub = await getPushSub();
     if (!sub) return [];
@@ -96,7 +101,7 @@ async function scheduleServerNotifs(queue, fromIdx, tRemaining) {
     const res = await fetch("/api/schedule-notifs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ subscription: sub.toJSON(), schedule }),
+      body: JSON.stringify({ subscription: sub.toJSON(), schedule, token }),
       keepalive: true,
     });
     const { ids } = await res.json();
@@ -110,22 +115,17 @@ async function scheduleServerNotifs(queue, fromIdx, tRemaining) {
 // abandoned rather than resumable.
 const SESSION_STALE_MS = 4 * 60 * 60 * 1000;
 
-// Returns whether the cancellation request actually went through — callers
-// use this to decide whether it's safe to stop tracking these ids, or
-// whether they need to stay persisted so a future sweep can retry.
-async function cancelServerNotifs(ids) {
-  if (!ids?.length) return true;
-  try {
-    await fetch("/api/cancel-notifs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ids }),
-      keepalive: true,
-    });
-    return true;
-  } catch {
-    return false;
-  }
+// Best-effort cleanup so queued messages don't sit around burning quota. It is
+// deliberately not load-bearing: revoking the notification token is what makes
+// a pause or exit take effect, and that works even when this never runs.
+function cancelServerNotifs(ids) {
+  if (!ids?.length) return;
+  fetch("/api/cancel-notifs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+    keepalive: true,
+  }).catch(() => {});
 }
 
 export default function SessionScreen({ goBack, params }) {
@@ -144,7 +144,9 @@ export default function SessionScreen({ goBack, params }) {
     wakeLock: null,
     repCount: 0,
     notifIds: [],
+    sessionId: null, // identifies this run's notifications to the service worker
     notifGen: 0, // incremented on every cancel/reschedule to invalidate in-flight requests
+    ended: false, // set once the session is over, to stop it being re-persisted
   });
 
   const [ui, setUi] = useState({
@@ -185,18 +187,9 @@ export default function SessionScreen({ goBack, params }) {
     } else {
       // Belongs to a different/finished routine, already ended, or too old
       // to trust — make sure nothing it scheduled is still able to fire.
-      cancelServerNotifs(saved.notifIds).then((ok) => {
-        if (ok) {
-          clearSessionState();
-        } else {
-          saveSessionState({
-            routineId: saved.routineId,
-            notifIds: saved.notifIds,
-            ended: true,
-            updatedAt: Date.now(),
-          });
-        }
-      });
+      clearNotifToken();
+      cancelServerNotifs(saved.notifIds);
+      clearSessionState();
     }
   }, [routineId]);
 
@@ -204,6 +197,9 @@ export default function SessionScreen({ goBack, params }) {
   // let a future boot cancel any notifications still scheduled server-side.
   function persistSession(overrides = {}) {
     const s = sess.current;
+    // Once the session is over, unmount cleanup must not write a fresh
+    // record and resurrect it as something resumable.
+    if (s.ended) return;
     saveSessionState({
       routineId,
       idx: s.idx,
@@ -306,7 +302,13 @@ export default function SessionScreen({ goBack, params }) {
       persistSession();
       return;
     }
-    const ids = await scheduleServerNotifs(s.queue, s.idx, s.t);
+    // Publish the token before the messages it authorises exist, so there is
+    // no window in which an alert could arrive unrecognised.
+    const token = { id: s.sessionId, gen };
+    await setNotifToken(token);
+    if (sess.current.notifGen !== gen) return;
+
+    const ids = await scheduleServerNotifs(s.queue, s.idx, s.t, token);
     if (sess.current.notifGen !== gen) {
       // Superseded — cancel these immediately so they don't fire while paused
       cancelServerNotifs(ids);
@@ -330,34 +332,24 @@ export default function SessionScreen({ goBack, params }) {
     const oldIds = s.notifIds;
     s.notifIds = [];
     s.notifGen++; // invalidates any in-flight scheduleNotifsForGen
-    const ok = await cancelServerNotifs(oldIds);
-    // If cancellation failed, keep the ids in storage (even though we've
-    // stopped tracking them in memory) so a future boot sweep retries —
-    // otherwise a failed fetch here means they'd never get cancelled at all.
-    persistSession({ notifIds: ok ? [] : oldIds });
+    // Revoking the token is the part that actually stops pending alerts,
+    // including ones whose ids we never received back from the server.
+    await clearNotifToken();
+    cancelServerNotifs(oldIds);
+    persistSession();
   }
 
   // Used when the session is ending for good (finished or explicitly exited)
-  // rather than just pausing. Unlike cancelNotifs(), this doesn't leave a
-  // resumable record behind — but if cancellation fails, it still leaves a
-  // non-resumable "ended" marker carrying the ids so a future boot sweep can
-  // retry, instead of clearing storage and losing track of them entirely.
+  // rather than just pausing — no resumable record is left behind.
   async function endSession() {
     const s = sess.current;
     const oldIds = s.notifIds;
     s.notifIds = [];
     s.notifGen++;
-    const ok = await cancelServerNotifs(oldIds);
-    if (ok) {
-      clearSessionState();
-    } else {
-      saveSessionState({
-        routineId,
-        notifIds: oldIds,
-        ended: true,
-        updatedAt: Date.now(),
-      });
-    }
+    s.ended = true;
+    await clearNotifToken();
+    cancelServerNotifs(oldIds);
+    clearSessionState();
   }
 
   // Shared per-second countdown tick, used both for a fresh start and for
@@ -398,11 +390,19 @@ export default function SessionScreen({ goBack, params }) {
 
   // Request notification permission then schedule all phase alerts server-side.
   async function kickoffNotifs() {
+    const s = sess.current;
+    const gen = ++s.notifGen;
+    // Retire whatever an earlier run left authorised before granting this one
+    // a token. Ordered as sequential awaits so the clear can't land after the
+    // write that follows it.
+    await clearNotifToken();
+    if (s.paused) return;
+
     let perm = Notification?.permission;
     if (perm === "default") perm = await Notification.requestPermission();
     if (perm !== "granted") return;
-    const s = sess.current;
-    const gen = ++s.notifGen;
+    // The prompt can sit open for a while — bail if the session moved on.
+    if (sess.current.notifGen !== gen) return;
     await scheduleNotifsForGen(gen);
   }
 
@@ -421,6 +421,12 @@ export default function SessionScreen({ goBack, params }) {
     s.paused = false;
     s.repCount = 0;
     s.notifIds = [];
+    // A fresh identity retires every notification any earlier run scheduled,
+    // whether or not we ever managed to cancel it. notifGen is deliberately
+    // left running so a request still in flight from the previous run can't
+    // collide with a reused number and be mistaken for current.
+    s.sessionId = generateId();
+    s.ended = false;
 
     const first = queue[0];
     setUi(itemToUi(first, s.t, 0, queue.length, false));
@@ -455,6 +461,8 @@ export default function SessionScreen({ goBack, params }) {
     s.paused = !!saved.paused;
     s.repCount = saved.repCount ?? 0;
     s.notifIds = []; // old ids are stale/expired — we'll build a fresh schedule below
+    s.sessionId = generateId();
+    s.ended = false;
 
     const item = queue[s.idx];
     if (item.type === "reps") {
@@ -485,7 +493,7 @@ export default function SessionScreen({ goBack, params }) {
       advanceQueue();
     }
 
-    if (!s.paused) kickoffNotifs();
+    kickoffNotifs();
   }
 
   function doPause() {
